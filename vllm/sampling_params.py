@@ -93,6 +93,12 @@ class RequestOutputKind(Enum):
     FINAL_ONLY = 2
 
 
+class CompressionMode(Enum):
+    NONE = 0
+    ENCODE = 1
+    DECODE = 2
+
+
 class SamplingParams(
         msgspec.Struct,
         omit_defaults=True,  # type: ignore[call-arg]
@@ -217,6 +223,10 @@ class SamplingParams(
     generated token can complete the sequence."""
     _bad_words_token_ids: Optional[list[list[int]]] = None
 
+    compression_mode: CompressionMode = CompressionMode.NONE
+    compressed_ids: list[int] | None = None
+    threshold: int = 256
+
     @staticmethod
     def from_optional(
         n: Optional[int] = 1,
@@ -336,6 +346,13 @@ class SamplingParams(
 
         if self.prompt_logprobs is True:
             self.prompt_logprobs = 1
+        
+        if self.compression_mode == CompressionMode.ENCODE:
+            assert self.threshold is not None
+            self.logprobs = self.prompt_logprobs = self.threshold
+        elif self.compression_mode == CompressionMode.DECODE:
+            assert self.compressed_ids is not None and self.threshold is not None
+            self.logprobs = self.prompt_logprobs = self.threshold
 
         # Number of characters to hold back for stop string evaluation
         # until sequence is finished.

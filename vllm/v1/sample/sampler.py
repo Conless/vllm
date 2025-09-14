@@ -15,6 +15,7 @@ from vllm.v1.sample.ops.bad_words import apply_bad_words
 from vllm.v1.sample.ops.logprobs import batched_count_greater_than
 from vllm.v1.sample.ops.penalties import apply_all_penalties
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
+from vllm.v1.worker.gpu_input_batch import InputBatch
 
 _SAMPLING_EPS = 1e-5
 
@@ -71,12 +72,15 @@ class Sampler(nn.Module):
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
+        input_batch: Optional[InputBatch] = None,
+        positions: Optional[torch.Tensor] = None,
     ) -> SamplerOutput:
         # NOTE(woosuk): Use the original logits (before any penalties or
         # temperature scaling) for the top-k logprobs.
         # This is different from the V0 sampler, which uses the logits that
         # is used for sampling (after penalties and temperature scaling).
         num_logprobs = sampling_metadata.max_num_logprobs
+        raw_logprobs = None
         if num_logprobs is not None:
             if self.logprobs_mode == LogprobsMode.RAW_LOGPROBS:
                 raw_logprobs = self.compute_logprobs(logits)
@@ -85,6 +89,44 @@ class Sampler(nn.Module):
 
         # Use float32 for the logits.
         logits = logits.to(torch.float32)
+
+        if sampling_metadata.encoding_reqs or sampling_metadata.decoding_reqs:
+            encoding_reqs: set[str] = sampling_metadata.encoding_reqs or set()
+            decoding_reqs: set[str] = sampling_metadata.decoding_reqs or set()
+            total_compress_reqs = encoding_reqs | decoding_reqs
+            assert input_batch is not None and positions is not None, \
+                "Input batch and positions are required for compress requests"
+            assert len(total_compress_reqs) == input_batch.num_reqs, \
+                "Mixed compress requests and normal requests in the same batch is not allowed"
+            assert sampling_metadata.compressed_ids is not None, \
+                "Compressed ids are required for compress requests"
+            assert sampling_metadata.threshold is not None, \
+                "Threshold is required for compress requests"
+            assert num_logprobs is not None and raw_logprobs is not None, \
+                "Logprobs are required for compress requests"
+            
+            sampled = self.greedy_sample(logits)
+            logprobs_tensor = self.gather_logprobs(raw_logprobs, num_logprobs, token_ids=sampled)
+            sampled_cpu = sampled.to(device="cpu")
+            positions_cpu = positions.to(device="cpu")
+            logprobs_token_ids_cpu = logprobs_tensor.logprob_token_ids.to(device="cpu")
+            for req_id in decoding_reqs:
+                token_idx = input_batch.req_id_to_index[req_id]
+                position = positions_cpu[token_idx]
+                compressed_id = sampling_metadata.compressed_ids[req_id][position]
+                threshold = sampling_metadata.threshold[req_id]
+                assert num_logprobs >= threshold, \
+                    "Num logprobs should be greater than threshold for compress requests"
+                if compressed_id < threshold:
+                    sampled_cpu[token_idx] = logprobs_token_ids_cpu[token_idx][compressed_id + 1]
+                else:
+                    sampled_cpu[token_idx] = compressed_id - threshold
+            sampled = sampled_cpu.to(device="cuda")
+            return SamplerOutput(
+                sampled_token_ids=sampled.unsqueeze(-1),
+                logprobs_tensors=logprobs_tensor,
+            )
+
         # Apply allowed token ids.
         logits = self.apply_allowed_token_ids(logits, sampling_metadata)
         # Apply bad words exclusion.

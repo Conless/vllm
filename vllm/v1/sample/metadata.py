@@ -41,3 +41,9 @@ class SamplingMetadata:
 
     # Loaded logits processors
     logitsprocs: LogitsProcessors
+
+    # Compression
+    encoding_reqs: Optional[set[str]] = None
+    decoding_reqs: Optional[set[str]] = None
+    compressed_ids: Optional[dict[str, list[int]]] = None
+    threshold: Optional[dict[str, int]] = None

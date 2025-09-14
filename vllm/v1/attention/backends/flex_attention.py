@@ -455,7 +455,13 @@ class FlexAttentionMetadata:
         used_pages_padded = used_pages_padded // page_to_block_ratio + 1
         kv_indices = unique_static_unsorted((used_pages_padded.long()),
                                             M=self.num_blocks).to(torch.int32)
-
+        max_kv_indices = int(kv_indices.max().item() - 1)
+        col_num = kv_indices.shape[-1]
+        kv_indices = F.pad(
+            kv_indices,
+            (0, max(max_kv_indices - col_num, 0)),
+            value=-1,
+        )
         kv_indices = kv_indices.to(torch.int32) - 1
         kv_num_blocks = (kv_indices >= 0).sum(dim=-1).to(torch.int32)
         block_mask_kwargs = {

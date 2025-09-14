@@ -1675,7 +1675,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
     def _sample(
             self, logits: Optional[torch.Tensor],
-            spec_decode_metadata: Optional[SpecDecodeMetadata]
+            spec_decode_metadata: Optional[SpecDecodeMetadata],
+            positions: Optional[torch.Tensor] = None
     ) -> SamplerOutput:
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
@@ -1683,6 +1684,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             sampler_output = self.sampler(
                 logits=logits,
                 sampling_metadata=sampling_metadata,
+                input_batch=self.input_batch,
+                positions=positions,
             )
         else:
             # When indexing with a tensor (bonus_logits_indices), PyTorch
@@ -1954,7 +1957,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 self.apply_grammar_bitmask(scheduler_output, logits)
 
         with record_function_or_nullcontext("Sample"):
-            sampler_output = self._sample(logits, spec_decode_metadata)
+            sampler_output = self._sample(logits, spec_decode_metadata, positions=positions)
 
         with record_function_or_nullcontext("Bookkeep"):
             assert isinstance(hidden_states, torch.Tensor)

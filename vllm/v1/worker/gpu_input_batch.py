@@ -13,7 +13,7 @@ from vllm.lora.request import LoRARequest
 from vllm.multimodal.inputs import (MultiModalKwargsItem,
                                     MultiModalKwargsItems, PlaceholderRange)
 from vllm.pooling_params import PoolingParams
-from vllm.sampling_params import SamplingParams, SamplingType
+from vllm.sampling_params import SamplingParams, SamplingType, CompressionMode
 from vllm.utils import swap_dict_values
 from vllm.v1.outputs import LogprobsTensors
 from vllm.v1.pool.metadata import PoolingMetadata
@@ -245,6 +245,12 @@ class InputBatch:
         # data structure
         self.logitsprocs = logitsprocs or LogitsProcessors()
 
+        # Compression-related.
+        self.encoding_reqs: set[str] = set()
+        self.decoding_reqs: set[str] = set()
+        self.compressed_ids: dict[str, list[int]] = {}
+        self.threshold: dict[str, int] = {}
+
         # This is updated each time the batch constituents change.
         self.sampling_metadata = self._make_sampling_metadata()
 
@@ -317,6 +323,14 @@ class InputBatch:
         self.block_table.add_row(request.block_ids, req_index)
 
         if sampling_params := request.sampling_params:
+            if sampling_params.compression_mode == CompressionMode.ENCODE:
+                self.encoding_reqs.add(req_id)
+            elif sampling_params.compression_mode == CompressionMode.DECODE:
+                assert sampling_params.compressed_ids is not None
+                self.decoding_reqs.add(req_id)
+                self.compressed_ids[req_id] = sampling_params.compressed_ids
+                self.threshold[req_id] = sampling_params.threshold
+
             if (self.is_spec_decode
                     and is_spec_decode_unsupported(sampling_params)):
                 self.spec_decode_unsupported_reqs.add(req_id)
@@ -453,6 +467,10 @@ class InputBatch:
         self.num_logprobs.pop(req_id, None)
         self.num_prompt_logprobs.pop(req_id, None)
         self.in_progress_prompt_logprobs_cpu.pop(req_id, None)
+        self.encoding_reqs.discard(req_id)
+        self.decoding_reqs.discard(req_id)
+        self.compressed_ids.pop(req_id, None)
+        self.threshold.pop(req_id, None)
 
         self.has_allowed_token_ids.discard(req_id)
         if self.allowed_token_ids_mask_cpu_tensor is not None:
@@ -708,6 +726,10 @@ class InputBatch:
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
+            encoding_reqs=self.encoding_reqs,
+            decoding_reqs=self.decoding_reqs,
+            compressed_ids=self.compressed_ids,
+            threshold=self.threshold,
         )
 
     def get_pooling_params(self) -> list[PoolingParams]:
