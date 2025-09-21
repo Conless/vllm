@@ -3614,14 +3614,20 @@ class VllmConfig:
                 logger.info("full_cuda_graph is not supported with "
                             "nano batch split. Disabling nano batch split.")
                 self.compilation_config.enable_nano_batch_split = False
-            elif self.compilation_config.splitting_ops:
-                logger.info("splitting_ops is not supported with "
-                            "nano batch split. Disabling nano batch split.")
-                self.compilation_config.enable_nano_batch_split = False
             else:
-                self.compilation_config.splitting_ops = [
+                nano_split_ops = [
                     "vllm.all_reduce",
+                    "vllm.moe_forward_dispatch",
+                    "vllm.moe_forward_combine",
                 ]
+                if self.compilation_config.splitting_ops \
+                    and self.compilation_config.splitting_ops != nano_split_ops:
+                    logger.info(
+                        "splitting_ops is not supported with "
+                        "nano batch split. Disabling nano batch split.")
+                    self.compilation_config.enable_nano_batch_split = False
+                else:
+                    self.compilation_config.splitting_ops = nano_split_ops
         # If the user does not explicitly set a compilation level, then
         # we use the default level. The default level depends on other
         # settings (see the below code).

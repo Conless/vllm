@@ -1617,8 +1617,27 @@ class FusedMoE(CustomOp):
                 shared_output, fused_output = self.forward_impl(
                     hidden_states, router_logits)
             else:
-                shared_output, fused_output = torch.ops.vllm.moe_forward_shared(
-                    hidden_states, router_logits, self.layer_name)
+                assert self.shared_experts is not None
+                hidden_states, router_logits = \
+                    torch.ops.vllm.moe_forward_dispatch(
+                        hidden_states,
+                        router_logits,
+                        self.layer_name)
+                shared_output = \
+                    torch.ops.vllm.moe_forward_shared(
+                        hidden_states,
+                        self.layer_name)
+                fused_output = \
+                    torch.ops.vllm.moe_forward_expert(
+                        hidden_states,
+                        router_logits,
+                        self.layer_name)
+                shared_output, fused_output = \
+                    torch.ops.vllm.moe_forward_combine(
+                        shared_output,
+                        fused_output,
+                        self.layer_name)
+
             return (shared_output[..., :og_hidden_states],
                     fused_output[..., :og_hidden_states])
 
@@ -1804,6 +1823,84 @@ class FusedMoE(CustomOp):
                 reduce_output(final_hidden_states[1]),
             )
 
+    def forward_impl_dispatch(
+            self, hidden_states: torch.Tensor,
+            router_logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        assert self.quant_method is not None
+        use_flashinfer_cutlass_kernels = (
+            self.dp_size > 1
+            and self.moe_config.use_flashinfer_cutlass_kernels)
+        if (self.moe_parallel_config.use_pplx_kernels
+                or self.moe_parallel_config.use_deepep_ll_kernels
+                or use_flashinfer_cutlass_kernels):
+            return self.forward_impl_chunked(hidden_states, router_logits)
+
+        do_naive_dispatch_combine: bool = (
+            self.dp_size > 1
+            and not self.moe_parallel_config.use_deepep_ht_kernels
+            and not self.moe_config.use_flashinfer_cutlass_kernels)
+        if do_naive_dispatch_combine:
+            hidden_states, router_logits = get_ep_group().dispatch(
+                hidden_states, router_logits)
+        return hidden_states, router_logits
+
+    def forward_impl_shared(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        assert self.shared_experts is not None
+        return self.shared_experts(hidden_states)
+
+    def forward_impl_expert(self, hidden_states: torch.Tensor,
+                            router_logits: torch.Tensor) -> torch.Tensor:
+        assert self.quant_method is not None
+        final_hidden_states = self.quant_method.apply(
+            layer=self,
+            x=hidden_states,
+            router_logits=router_logits,
+            top_k=self.top_k,
+            renormalize=self.renormalize,
+            use_grouped_topk=self.use_grouped_topk,
+            global_num_experts=self.global_num_experts,
+            expert_map=self.expert_map,
+            topk_group=self.topk_group,
+            num_expert_group=self.num_expert_group,
+            custom_routing_function=self.custom_routing_function,
+            scoring_func=self.scoring_func,
+            routed_scaling_factor=self.routed_scaling_factor,
+            e_score_correction_bias=self.e_score_correction_bias,
+            activation=self.activation,
+            apply_router_weight_on_input=self.apply_router_weight_on_input,
+            enable_eplb=self.enable_eplb,
+            expert_load_view=self.expert_load_view,
+            logical_to_physical_map=self.logical_to_physical_map,
+            logical_replica_count=self.logical_replica_count,
+        )
+        assert not isinstance(final_hidden_states, tuple)
+        return final_hidden_states
+
+    def forward_impl_combine(
+        self,
+        final_hidden_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        assert self.shared_experts is not None
+        assert isinstance(final_hidden_states, tuple)
+        do_naive_dispatch_combine: bool = (
+            self.dp_size > 1
+            and not self.moe_parallel_config.use_deepep_ht_kernels
+            and not self.moe_config.use_flashinfer_cutlass_kernels)
+
+        def reduce_output(states: torch.Tensor) -> torch.Tensor:
+            if do_naive_dispatch_combine:
+                states = get_ep_group().combine(states)
+
+            if self.reduce_results and (self.tp_size > 1 or self.ep_size > 1):
+                states = self.maybe_all_reduce_tensor_model_parallel(states)
+
+            return states
+
+        return (
+            reduce_output(final_hidden_states[0]),
+            reduce_output(final_hidden_states[1]),
+        )
+
     @classmethod
     def make_expert_params_mapping(
             cls,
@@ -1857,6 +1954,60 @@ class FusedMoE(CustomOp):
         return s
 
 
+def moe_forward_dispatch(hidden_states: torch.Tensor,
+                         router_logits: torch.Tensor,
+                         layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    return self.forward_impl_dispatch(hidden_states, router_logits)
+
+
+def moe_forward_dispatch_fake(
+        hidden_states: torch.Tensor, router_logits: torch.Tensor,
+        layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.empty_like(hidden_states), torch.empty_like(router_logits)
+
+
+def moe_forward_shared(hidden_states: torch.Tensor,
+                       layer_name: str) -> torch.Tensor:
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    return self.forward_impl_shared(hidden_states)
+
+
+def moe_forward_shared_fake(hidden_states: torch.Tensor,
+                            layer_name: str) -> torch.Tensor:
+    return torch.empty_like(hidden_states)
+
+
+def moe_forward_expert(hidden_states: torch.Tensor,
+                       router_logits: torch.Tensor,
+                       layer_name: str) -> torch.Tensor:
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    return self.forward_impl_expert(hidden_states, router_logits)
+
+
+def moe_forward_expert_fake(hidden_states: torch.Tensor,
+                            router_logits: torch.Tensor,
+                            layer_name: str) -> torch.Tensor:
+    return torch.empty_like(hidden_states)
+
+
+def moe_forward_combine(shared_output: torch.Tensor,
+                        fused_output: torch.Tensor,
+                        layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    return self.forward_impl_combine((shared_output, fused_output))
+
+
+def moe_forward_combine_fake(
+        shared_output: torch.Tensor, fused_output: torch.Tensor,
+        layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return (torch.empty_like(shared_output), torch.empty_like(fused_output))
+
+
 def moe_forward(
     hidden_states: torch.Tensor,
     router_logits: torch.Tensor,
@@ -1885,33 +2036,38 @@ direct_register_custom_op(
     tags=(torch.Tag.needs_fixed_stride_order, ),
 )
 
-
-def moe_forward_shared(
-    hidden_states: torch.Tensor,
-    router_logits: torch.Tensor,
-    layer_name: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    forward_context: ForwardContext = get_forward_context()
-    self = forward_context.no_compile_layers[layer_name]
-    assert self.shared_experts is not None
-    return self.forward_impl(hidden_states, router_logits)
-
-
-def moe_forward_shared_fake(
-    hidden_states: torch.Tensor,
-    router_logits: torch.Tensor,
-    layer_name: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    shared_out = torch.empty_like(hidden_states)
-    fused_out = torch.empty_like(hidden_states)
-    return shared_out, fused_out
-
+direct_register_custom_op(
+    op_name="moe_forward_dispatch",
+    op_func=moe_forward_dispatch,
+    mutates_args=["hidden_states"],
+    fake_impl=moe_forward_dispatch_fake,
+    dispatch_key=current_platform.dispatch_key,
+    tags=(torch.Tag.needs_fixed_stride_order, ),
+)
 
 direct_register_custom_op(
     op_name="moe_forward_shared",
     op_func=moe_forward_shared,
     mutates_args=["hidden_states"],
     fake_impl=moe_forward_shared_fake,
+    dispatch_key=current_platform.dispatch_key,
+    tags=(torch.Tag.needs_fixed_stride_order, ),
+)
+
+direct_register_custom_op(
+    op_name="moe_forward_expert",
+    op_func=moe_forward_expert,
+    mutates_args=["hidden_states"],
+    fake_impl=moe_forward_expert_fake,
+    dispatch_key=current_platform.dispatch_key,
+    tags=(torch.Tag.needs_fixed_stride_order, ),
+)
+
+direct_register_custom_op(
+    op_name="moe_forward_combine",
+    op_func=moe_forward_combine,
+    mutates_args=["shared_output", "fused_output"],
+    fake_impl=moe_forward_combine_fake,
     dispatch_key=current_platform.dispatch_key,
     tags=(torch.Tag.needs_fixed_stride_order, ),
 )

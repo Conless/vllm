@@ -557,6 +557,7 @@ class VllmBackend:
         self.graph = graph
         self.configure_post_pass()
 
+        assert self.compilation_config.splitting_ops is not None
         self.split_gm, self.piecewise_graphs = split_graph(
             graph, self.compilation_config.splitting_ops)
 
@@ -569,16 +570,16 @@ class VllmBackend:
 
         compilation_counter.num_piecewise_graphs_seen += len(
             self.piecewise_graphs)
-        submod_names_to_compile = [
-            item.submod_name for item in self.piecewise_graphs
-            if not item.is_splitting_graph
-        ]
+        # submod_names_to_compile = [
+        #     item.submod_name for item in self.piecewise_graphs
+        #     if not item.is_splitting_graph
+        # ]
 
         # propagate the split graph to the piecewise backend,
         # compile submodules with symbolic shapes
-        PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
-                                    self.vllm_config,
-                                    self).run(*example_inputs)
+        # PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
+        #                             self.vllm_config,
+        #                             self).run(*example_inputs)
 
         graph_path = os.path.join(local_cache_dir, "computation_graph.py")
         if not os.path.exists(graph_path):

@@ -8,9 +8,11 @@ import numpy as np
 import torch
 
 from vllm.compilation.nanoflow import manager as nano_manager
-from vllm.compilation.nanoflow.split_utils import NanoOpInfo
+from vllm.compilation.nanoflow.split_utils import NanoOpInfo, NanoSplitConfig
 from vllm.config.compilation import CUDAGraphMode
-from vllm.forward_context import (ForwardContext, get_forward_context,
+from vllm.distributed.parallel_state import get_dp_group
+from vllm.forward_context import (DPMetadata, ForwardContext,
+                                  get_forward_context,
                                   override_forward_context)
 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 from vllm.v1.core.sched.output import SchedulerOutput
@@ -60,7 +62,24 @@ def prepare_nano_split_and_set_hooks(
     query_start_loc = query_start_loc_cpu.to(input_batch.device)
     seq_lens = seq_lens_cpu.to(input_batch.device)
 
+    dp_nano_split_config: Optional[list[Optional[NanoSplitConfig]]] = None
+    dp_size = 1
+    dp_rank = 0
+    if prev_forward_context.dp_metadata is not None:
+        dp_group = get_dp_group()
+        dp_size = dp_group.world_size
+        dp_rank = dp_group.rank
+        dp_nano_split_config = [None for _ in range(dp_size)]
+        dp_nano_split_config[dp_rank] = split_config
+        for i in range(dp_size):
+            dp_nano_split_config[i] = dp_group.broadcast_object(
+                dp_nano_split_config[i], src=i)
+            assert dp_nano_split_config[i] is not None
+            assert dp_nano_split_config[
+                i].num_nano_batches == split_config.num_nano_batches
+
     attn_metadatas = []
+    dp_metadata = []
     start_req_idx = 0
     end_req_idx = 0
     for nano_batch_idx in range(split_config.num_nano_batches):
@@ -93,6 +112,27 @@ def prepare_nano_split_and_set_hooks(
             nano_batch_arange,
             out=nano_batch_positions_np,
         )
+
+        # Prepare DP MoE metdata
+        if dp_nano_split_config is not None:
+            dp_metadata.append(
+                DPMetadata(
+                    max_tokens_across_dp_cpu=torch.tensor(
+                        max([
+                            config.num_tokens[nano_batch_idx]
+                            if config is not None else 0
+                            for config in dp_nano_split_config
+                        ]),
+                        dtype=torch.int32,
+                    ),
+                    cu_tokens_across_dp_cpu=torch.tensor([
+                        sum(config.num_tokens[nano_batch_idx]
+                            if config is not None else 0
+                            for config in dp_nano_split_config[:i + 1])
+                        for i in range(dp_size)
+                    ],
+                                                         dtype=torch.int32),
+                ))
 
         # Prepare attention metadata for each KV cache group
         nano_batch_attn_metadata = {}
@@ -144,7 +184,7 @@ def prepare_nano_split_and_set_hooks(
             no_compile_layers=prev_forward_context.no_compile_layers,
             attn_metadata=attn_metadatas[i],
             virtual_engine=prev_forward_context.virtual_engine,
-            dp_metadata=prev_forward_context.dp_metadata,
+            dp_metadata=dp_metadata[i],
             cudagraph_runtime_mode=CUDAGraphMode.NONE,
         ) for i in range(split_config.num_nano_batches)
     ]
