@@ -11,7 +11,7 @@ import torch
 from typing_extensions import TypeVar
 
 from vllm.logger import init_logger
-from vllm.logprobs import PromptLogprobs, SampleLogprobs
+from vllm.v1.outputs import LogprobsTensors, LogprobsLists
 from vllm.lora.request import LoRARequest
 from vllm.multimodal.inputs import MultiModalPlaceholderDict
 from vllm.sampling_params import RequestOutputKind
@@ -44,7 +44,7 @@ class CompletionOutput:
     text: str
     token_ids: GenericSequence[int]
     cumulative_logprob: Optional[float]
-    logprobs: Optional[SampleLogprobs]
+    logprobs: Optional[LogprobsLists]
     finish_reason: Optional[str] = None
     stop_reason: Union[int, str, None] = None
     lora_request: Optional[LoRARequest] = None
@@ -108,7 +108,7 @@ class RequestOutput:
         request_id: str,
         prompt: Optional[str],
         prompt_token_ids: Optional[list[int]],
-        prompt_logprobs: Optional[PromptLogprobs],
+        prompt_logprobs: Optional[LogprobsTensors],
         outputs: list[CompletionOutput],
         finished: bool,
         metrics: Optional[RequestMetrics] = None,
