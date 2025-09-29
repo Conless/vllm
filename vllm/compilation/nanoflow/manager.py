@@ -35,9 +35,11 @@ class NanoSplitManager:
         tag_graph(
             self.original_graph_module,
             {
-                "vllm.unified_attention": "attention",
-                "vllm.unified_attention_with_output": "attention",
-                "vllm.all_reduce": "all_reduce",
+                "vllm.unified_attention": "memory",
+                "vllm.unified_attention_with_output": "memory",
+                "vllm.all_reduce": "network",
+                "vllm.moe_forward_dispatch": "network",
+                "vllm.moe_forward_combine": "network",
             },
         )
         self.graph_modules = {1: self.original_graph_module}
@@ -131,7 +133,7 @@ class NanoSplitManager:
 
             @contextlib.contextmanager
             def set_stream(op_info: NanoOpInfo):
-                if op_info.tag == "all_reduce":
+                if op_info.tag == "network":
                     torch.cuda.set_stream(self.comm_stream)
                     comm_finished[op_info.idx] = torch.cuda.Event()
                     if comp_finished[op_info.idx] is not None:
@@ -151,7 +153,7 @@ class NanoSplitManager:
                 try:
                     yield
                 finally:
-                    if op_info.tag == "all_reduce":
+                    if op_info.tag == "network":
                         comm_finished_event = comm_finished[op_info.idx]
                         assert comm_finished_event is not None
                         comm_finished_event.record()
@@ -216,6 +218,9 @@ class NanoSplitManager:
         )
         return self.cached_config
 
+    def disable(self):
+        self.cached_config = None
+
     def set_hooks(self,
                   op_hook: Callable[[NanoOpInfo],
                                     contextlib.AbstractContextManager[None]]):
@@ -246,6 +251,12 @@ def prepare_nano_split(
     if _split_manager is None:
         raise ValueError("Split manager not initialized")
     return _split_manager.prepare(batch_size, num_tokens, cached_seqlens)
+
+
+def disable_nano_split():
+    global _split_manager
+    if _split_manager is not None:
+        _split_manager.disable()
 
 
 def set_op_hook(op_hook: Callable[[NanoOpInfo],

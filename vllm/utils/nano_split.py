@@ -32,6 +32,10 @@ def _get_cumsum_and_arange(
     return cu_num_tokens, arange
 
 
+def disable_nano_split():
+    nano_manager.disable_nano_split()
+
+
 def prepare_nano_split_and_set_hooks(
     scheduler_output: SchedulerOutput,
     input_batch: InputBatch,
@@ -77,6 +81,10 @@ def prepare_nano_split_and_set_hooks(
             assert dp_nano_split_config[i] is not None
             assert dp_nano_split_config[
                 i].num_nano_batches == split_config.num_nano_batches
+    print(f"DP rank {dp_rank}, DP nano split config: {dp_nano_split_config}")
+    import sys
+    sys.stdout.flush()
+    get_dp_group().barrier()
 
     attn_metadatas = []
     dp_metadata = []

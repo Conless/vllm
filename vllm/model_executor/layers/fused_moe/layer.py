@@ -1618,6 +1618,9 @@ class FusedMoE(CustomOp):
                     hidden_states, router_logits)
             else:
                 assert self.shared_experts is not None
+                # shared_output, fused_output = torch.ops.vllm.\
+                #     moe_forward_with_shared(
+                #     hidden_states, router_logits, self.layer_name)
                 hidden_states, router_logits = \
                     torch.ops.vllm.moe_forward_dispatch(
                         hidden_states,
@@ -2027,6 +2030,25 @@ def moe_forward_fake(
     return torch.empty_like(hidden_states)
 
 
+def moe_forward_with_shared_fake(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    layer_name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return (torch.empty_like(hidden_states), torch.empty_like(hidden_states))
+
+
+def moe_forward_with_shared(
+    hidden_states: torch.Tensor,
+    router_logits: torch.Tensor,
+    layer_name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    assert self.shared_experts is not None
+    return self.forward_impl(hidden_states, router_logits)
+
+
 direct_register_custom_op(
     op_name="moe_forward",
     op_func=moe_forward,
@@ -2037,12 +2059,21 @@ direct_register_custom_op(
 )
 
 direct_register_custom_op(
+    op_name="moe_forward_with_shared",
+    op_func=moe_forward_with_shared,
+    mutates_args=["hidden_states"],
+    fake_impl=moe_forward_with_shared_fake,
+    dispatch_key=current_platform.dispatch_key,
+    tags=(torch.Tag.needs_fixed_stride_order, ),
+)
+
+direct_register_custom_op(
     op_name="moe_forward_dispatch",
     op_func=moe_forward_dispatch,
     mutates_args=["hidden_states"],
     fake_impl=moe_forward_dispatch_fake,
     dispatch_key=current_platform.dispatch_key,
-    tags=(torch.Tag.needs_fixed_stride_order, ),
+    tags=(torch.Tag.dynamic_output_shape, ),
 )
 
 direct_register_custom_op(
@@ -2051,7 +2082,7 @@ direct_register_custom_op(
     mutates_args=["hidden_states"],
     fake_impl=moe_forward_shared_fake,
     dispatch_key=current_platform.dispatch_key,
-    tags=(torch.Tag.needs_fixed_stride_order, ),
+    tags=(torch.Tag.dynamic_output_shape, ),
 )
 
 direct_register_custom_op(
@@ -2060,7 +2091,7 @@ direct_register_custom_op(
     mutates_args=["hidden_states"],
     fake_impl=moe_forward_expert_fake,
     dispatch_key=current_platform.dispatch_key,
-    tags=(torch.Tag.needs_fixed_stride_order, ),
+    tags=(torch.Tag.dynamic_output_shape, ),
 )
 
 direct_register_custom_op(
@@ -2069,7 +2100,7 @@ direct_register_custom_op(
     mutates_args=["shared_output", "fused_output"],
     fake_impl=moe_forward_combine_fake,
     dispatch_key=current_platform.dispatch_key,
-    tags=(torch.Tag.needs_fixed_stride_order, ),
+    tags=(torch.Tag.dynamic_output_shape, ),
 )
 
 # Mark the FusedMoE weight_loader as supporting MoE-specific parameters

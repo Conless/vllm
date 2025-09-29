@@ -55,7 +55,8 @@ from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, DeviceMemoryProfiler,
                         GiB_bytes, LazyLoader, cdiv, check_use_alibi,
                         get_dtype_size, is_pin_memory_available, round_up,
                         supports_dynamo)
-from vllm.utils.nano_split import prepare_nano_split_and_set_hooks
+from vllm.utils.nano_split import (disable_nano_split,
+                                   prepare_nano_split_and_set_hooks)
 from vllm.v1.attention.backends.utils import (
     AttentionCGSupport, AttentionMetadataBuilder, CommonAttentionMetadata,
     create_fast_prefill_custom_backend,
@@ -870,7 +871,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 num_scheduled_tokens, spec_decode_common_attn_metadata,
                 max_num_scheduled_tokens)
 
-    def _prepare_nano_split(self, scheduler_output: "SchedulerOutput"):
+    def _prepare_nano_split(self,
+                            scheduler_output: Optional["SchedulerOutput"]):
+        if scheduler_output is None:
+            disable_nano_split()
+            return
         prepare_nano_split_and_set_hooks(scheduler_output=scheduler_output,
                                          input_batch=self.input_batch,
                                          attn_groups=self.attn_groups,
@@ -2373,6 +2378,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     num_tokens_across_dp=num_tokens_across_dp,
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     batch_descriptor=batch_descriptor):
+                if self.vllm_config.compilation_config.enable_nano_batch_split:
+                    self._prepare_nano_split(None)
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,

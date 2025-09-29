@@ -558,8 +558,10 @@ class VllmBackend:
         self.configure_post_pass()
 
         assert self.compilation_config.splitting_ops is not None
+        # This may be because shared and expert moe cannot be compiled
         self.split_gm, self.piecewise_graphs = split_graph(
-            graph, self.compilation_config.splitting_ops)
+            graph, self.compilation_config.splitting_ops +
+            ["vllm.moe_forward_shared", "vllm.moe_forward_expert"])
 
         from torch._dynamo.utils import lazy_format_graph_code
 
@@ -570,16 +572,20 @@ class VllmBackend:
 
         compilation_counter.num_piecewise_graphs_seen += len(
             self.piecewise_graphs)
-        # submod_names_to_compile = [
-        #     item.submod_name for item in self.piecewise_graphs
-        #     if not item.is_splitting_graph
-        # ]
+        # This is because the graph after moe_forward_dispatch cannot be
+        # compiled
+        submod_names_to_compile = [
+            item.submod_name for item in self.piecewise_graphs
+            if not item.is_splitting_graph
+            and int(item.submod_name.split("_")[-1]) % 8 == 0
+        ]
+        print(f"submod_names_to_compile: {submod_names_to_compile}")
 
         # propagate the split graph to the piecewise backend,
         # compile submodules with symbolic shapes
-        # PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
-        #                             self.vllm_config,
-        #                             self).run(*example_inputs)
+        PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
+                                    self.vllm_config,
+                                    self).run(*example_inputs)
 
         graph_path = os.path.join(local_cache_dir, "computation_graph.py")
         if not os.path.exists(graph_path):
