@@ -7,9 +7,9 @@ from typing import Optional
 import numpy as np
 import torch
 
-from vllm.compilation.nanoflow import manager as nano_manager
-from vllm.compilation.nanoflow.split_utils import NanoOpInfo
 from vllm.forward_context import get_forward_context
+from vllm.nanoinfer import manager as nano_manager
+from vllm.nanoinfer.interface import OpInfo
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 
 
@@ -45,7 +45,7 @@ def nano_ubatch_split(
         slice(split_config.split_indices[1], split_config.split_indices[2]))
 
     @contextmanager
-    def op_hook(op_info: NanoOpInfo):
+    def op_hook(op_info: OpInfo):
         ctx = get_forward_context()
         attn_metadata_list = ctx.attn_metadata
         assert isinstance(attn_metadata_list, list)
