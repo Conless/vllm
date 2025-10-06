@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
+
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob, PromptLogprobs, SampleLogprobs
 from vllm.transformers_utils.detokenizer_utils import (
@@ -71,6 +73,35 @@ class LogprobsProcessor:
         return plp
 
     def update_from_output(self, output: EngineCoreOutput) -> None:
-        assert self.logprobs is None and self.prompt_logprobs is None
-        self.logprobs = output.new_logprobs
-        self.prompt_logprobs = output.new_prompt_logprobs_tensors
+        if self.logprobs is None:
+            self.logprobs = output.new_logprobs
+        elif output.new_logprobs is not None:
+            self.logprobs.logprob_token_ids.extend(output.new_logprobs.logprob_token_ids)
+            self.logprobs.logprobs.extend(output.new_logprobs.logprobs)
+            self.logprobs.sampled_token_ranks.extend(output.new_logprobs.sampled_token_ranks)
+        if self.prompt_logprobs is None:
+            self.prompt_logprobs = output.new_prompt_logprobs_tensors
+        elif output.new_prompt_logprobs_tensors is not None:
+            self.prompt_logprobs = LogprobsTensors(
+                logprob_token_ids=torch.cat(
+                    [
+                        self.prompt_logprobs.logprob_token_ids,
+                        output.new_prompt_logprobs_tensors.logprob_token_ids,
+                    ],
+                    dim=0,
+                ),
+                logprobs=torch.cat(
+                    [
+                        self.prompt_logprobs.logprobs,
+                        output.new_prompt_logprobs_tensors.logprobs,
+                    ],
+                    dim=0,
+                ),
+                selected_token_ranks=torch.cat(
+                    [
+                        self.prompt_logprobs.selected_token_ranks,
+                        output.new_prompt_logprobs_tensors.selected_token_ranks,
+                    ],
+                    dim=0,
+                ),
+            )
