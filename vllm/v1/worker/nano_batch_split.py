@@ -9,7 +9,7 @@ import torch
 
 from vllm.forward_context import get_forward_context
 from vllm.nanoinfer import manager as nano_manager
-from vllm.nanoinfer.interface import OpInfo
+from vllm.nanoinfer.interface import OperatorHandle
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 
 
@@ -38,18 +38,22 @@ def nano_ubatch_split(
         return (None, None)
     assert split_config.num_nano_batches == 2
 
-    first_slice = UBatchSlice(slice(0, split_config.batch_indices[1]),
-                              slice(0, split_config.split_indices[1]))
+    first_slice = UBatchSlice(
+        slice(0, split_config.batch_indices[1]),
+        slice(0, split_config.split_indices[1]),
+    )
     second_slice = UBatchSlice(
         slice(split_config.batch_indices[1], batch_size),
-        slice(split_config.split_indices[1], split_config.split_indices[2]))
+        slice(split_config.split_indices[1], split_config.split_indices[2]),
+    )
 
     @contextmanager
-    def op_hook(op_info: OpInfo):
+    def op_hook(op_info: tuple[OperatorHandle]):
+        assert len(op_info) == 1
         ctx = get_forward_context()
         attn_metadata_list = ctx.attn_metadata
         assert isinstance(attn_metadata_list, list)
-        ctx.attn_metadata = attn_metadata_list[op_info.idx]
+        ctx.attn_metadata = attn_metadata_list[op_info[0].nano_batch_idx]
         try:
             yield
         finally:
@@ -58,7 +62,7 @@ def nano_ubatch_split(
 
     nano_manager.set_op_hook(op_hook)
 
-    return ([first_slice, second_slice],
-            torch.tensor(split_config.num_tokens,
-                         device="cpu",
-                         dtype=torch.int32))
+    return (
+        [first_slice, second_slice],
+        torch.tensor(split_config.num_tokens, device="cpu", dtype=torch.int32),
+    )
