@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
 from dataclasses import dataclass
-from typing import Callable, Optional
+from vllm.green_ctx import split_device_green_ctx_by_sm_count
 
 import torch
+import nvmath
 from typing_extensions import override
 
-from vllm.nanoinfer.interface import (InputInfo, OpInfo, OpSchedulerBase,
-                                      SplitConfig)
+from vllm.nanoinfer.interface import InputInfo, OpSchedulerBase, SplitConfig
 
 
 @dataclass
@@ -24,12 +24,6 @@ class NanoFlowScheduler(OpSchedulerBase):
         self.config = config
         self.comm_stream = torch.cuda.Stream()
         self.comp_stream = torch.cuda.Stream()
-        self.comm_finished: list[Optional[torch.cuda.Event]] = [
-            None for _ in range(config.max_num_nano_batches)
-        ]
-        self.comp_finished: list[Optional[torch.cuda.Event]] = [
-            None for _ in range(config.max_num_nano_batches)
-        ]
 
     @override
     def get_split_config(self, input_info: InputInfo) -> SplitConfig:
@@ -60,41 +54,42 @@ class NanoFlowScheduler(OpSchedulerBase):
             )
 
     @override
-    def schedule(
-        self,
-        split_config: SplitConfig,
-        op_infos: dict[int, list[OpInfo]],
-        executor: Callable,
-    ) -> None:
-        for op_info_0, op_info_1 in zip(op_infos[0], op_infos[1]):
-            op_info_list = [op_info_0, op_info_1]
-            for batch_idx, op_info in enumerate(op_info_list):
-                if op_info.submod_name == "":
-                    executor(op_info)
+    async def schedule(self, context) -> None:
+        """Schedule operators with stream overlap using async interface.
+
+        This scheduler:
+        - Pops operators from all nano-batches in lockstep
+        - Assigns network ops to comm_stream, others to comp_stream
+        - Engine handles cross-stream synchronization via events
+        """
+        from vllm.nanoinfer.interface import ExecutionContext
+        assert isinstance(context, ExecutionContext)
+
+        num_batches = context.split_config.num_nano_batches
+        batch_indices = list(range(num_batches))
+
+        while batch_indices:
+            ops = []
+            for batch_idx in batch_indices:
+                op = await context.pop(batch_idx)
+                if op is None:
+                    batch_indices.remove(batch_idx)
                     continue
-                tag = op_info.tag
+                ops.append((batch_idx, op))
+
+            for batch_idx, op in ops:
+                tag = op.debug_info.get("tag", "")
                 if tag == "network":
-                    torch.cuda.set_stream(self.comm_stream)
-                    self.comm_finished[batch_idx] = torch.cuda.Event()
-                    if self.comp_finished[batch_idx] is not None:
-                        comp_finished_event = self.comp_finished[batch_idx]
-                        assert comp_finished_event is not None
-                        comp_finished_event.wait()
-                        self.comp_finished[batch_idx] = None
+                    stream = self.comm_stream
                 else:
-                    torch.cuda.set_stream(self.comp_stream)
-                    self.comp_finished[batch_idx] = torch.cuda.Event()
-                    if self.comm_finished[batch_idx] is not None:
-                        comm_finished_event = self.comm_finished[batch_idx]
-                        assert comm_finished_event is not None
-                        comm_finished_event.wait()
-                        self.comm_finished[batch_idx] = None
-                executor(op_info)
-                if tag == "network":
-                    comm_finished_event = self.comm_finished[batch_idx]
-                    assert comm_finished_event is not None
-                    comm_finished_event.record()
-                else:
-                    comp_finished_event = self.comp_finished[batch_idx]
-                    assert comp_finished_event is not None
-                    comp_finished_event.record()
+                    stream = self.comp_stream
+                with torch.cuda.stream(stream):
+                    await context.execute((op,))
+
+        stream_events = [torch.cuda.Event(), torch.cuda.Event()]
+        with torch.cuda.stream(self.comp_stream):
+            stream_events[0].record()
+        with torch.cuda.stream(self.comm_stream):
+            stream_events[1].record()
+        for event in stream_events:
+            event.wait()
