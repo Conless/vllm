@@ -2,10 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
 from dataclasses import dataclass
-from vllm.green_ctx import split_device_green_ctx_by_sm_count
 
 import torch
-import nvmath
 from typing_extensions import override
 
 from vllm.nanoinfer.interface import InputInfo, OpSchedulerBase, SplitConfig
@@ -84,7 +82,7 @@ class NanoFlowScheduler(OpSchedulerBase):
                 else:
                     stream = self.comp_stream
                 with torch.cuda.stream(stream):
-                    await context.execute((op,))
+                    await context.execute((op, ))
 
         stream_events = [torch.cuda.Event(), torch.cuda.Event()]
         with torch.cuda.stream(self.comp_stream):
