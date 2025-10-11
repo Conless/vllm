@@ -1789,6 +1789,25 @@ class FusedMoE(CustomOp):
             else:
                 shared_output, fused_output = torch.ops.vllm.moe_forward_shared(
                     hidden_states, router_logits, self.layer_name)
+                # hidden_states, router_logits = \
+                #     torch.ops.vllm.moe_forward_dispatch(
+                #         hidden_states,
+                #         router_logits,
+                #         self.layer_name)
+                # shared_output = \
+                #     torch.ops.vllm.moe_forward_shared(
+                #         hidden_states,
+                #         self.layer_name)
+                # fused_output = \
+                #     torch.ops.vllm.moe_forward_expert(
+                #         hidden_states,
+                #         router_logits,
+                #         self.layer_name)
+                # shared_output, fused_output = \
+                #     torch.ops.vllm.moe_forward_combine(
+                #         shared_output,
+                #         fused_output,
+                #         self.layer_name)
             return (shared_output[..., :og_hidden_states],
                     fused_output[..., :og_hidden_states])
 
@@ -2011,6 +2030,76 @@ class FusedMoE(CustomOp):
                 reduce_output(final_hidden_states[0], do_combine=False),
                 reduce_output(final_hidden_states[1]),
             )
+
+    def forward_impl_dispatch(
+            self, hidden_states: torch.Tensor,
+            router_logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        assert self.quant_method is not None
+        do_naive_dispatch_combine: bool = (
+            self.dp_size > 1
+            and not self.moe_parallel_config.use_deepep_ht_kernels
+            and not self.moe_config.use_flashinfer_cutlass_kernels)
+        if do_naive_dispatch_combine:
+            hidden_states, router_logits = get_ep_group().dispatch(
+                hidden_states, router_logits)
+        return hidden_states, router_logits
+
+    def forward_impl_shared(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        assert self.shared_experts is not None
+        return self.shared_experts(hidden_states)
+
+    def forward_impl_expert(self, hidden_states: torch.Tensor,
+                            router_logits: torch.Tensor) -> torch.Tensor:
+        assert self.quant_method is not None
+        final_hidden_states = self.quant_method.apply(
+            layer=self,
+            x=hidden_states,
+            router_logits=router_logits,
+            top_k=self.top_k,
+            renormalize=self.renormalize,
+            use_grouped_topk=self.use_grouped_topk,
+            global_num_experts=self.global_num_experts,
+            expert_map=self.expert_map,
+            topk_group=self.topk_group,
+            num_expert_group=self.num_expert_group,
+            custom_routing_function=self.custom_routing_function,
+            scoring_func=self.scoring_func,
+            routed_scaling_factor=self.routed_scaling_factor,
+            e_score_correction_bias=self.e_score_correction_bias,
+            activation=self.activation,
+            apply_router_weight_on_input=self.apply_router_weight_on_input,
+            enable_eplb=self.enable_eplb,
+            expert_load_view=self.expert_load_view,
+            logical_to_physical_map=self.logical_to_physical_map,
+            logical_replica_count=self.logical_replica_count,
+        )
+        assert not isinstance(final_hidden_states, tuple)
+        return final_hidden_states
+
+    def forward_impl_combine(
+        self,
+        final_hidden_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        assert self.shared_experts is not None
+        assert isinstance(final_hidden_states, tuple)
+        do_naive_dispatch_combine: bool = (
+            self.dp_size > 1
+            and not self.moe_parallel_config.use_deepep_ht_kernels
+            and not self.moe_config.use_flashinfer_cutlass_kernels)
+
+        def reduce_output(states: torch.Tensor) -> torch.Tensor:
+            if do_naive_dispatch_combine:
+                states = get_ep_group().combine(states)
+
+            if self.reduce_results and (self.tp_size > 1 or self.ep_size > 1):
+                states = self.maybe_all_reduce_tensor_model_parallel(states)
+
+            return states
+
+        return (
+            reduce_output(final_hidden_states[0]),
+            reduce_output(final_hidden_states[1]),
+        )
 
     @classmethod
     def make_expert_params_mapping(
