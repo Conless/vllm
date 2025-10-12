@@ -44,6 +44,8 @@ class NanoInferManager:
                 # "vllm.unified_attention": "memory",
                 # "vllm.unified_attention_with_output": "memory",
                 "vllm.all_reduce": "network",
+                "vllm.moe_forward_dispatch": "network",
+                "vllm.moe_forward_combine": "network",
             },
         )
         self.scheduler = NanoFlowScheduler(
