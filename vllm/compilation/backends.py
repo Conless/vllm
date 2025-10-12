@@ -301,6 +301,7 @@ def split_graph(
         # node.target can be OpOverloadPacket, need to check .default
         if node.op == "call_function" and (
             node.target in resolved_ops
+            or str(node.target) in resolved_ops
             or (hasattr(node.target, "default") and node.target.default in resolved_ops)
         ):
             subgraph_id += 1
@@ -626,14 +627,16 @@ class VllmBackend:
         self.graph = graph
         self.configure_post_pass()
 
-        if self.compilation_config.use_inductor_graph_partition:
-            # Let Inductor decide partitioning; avoid FX-level pre-splitting.
-            fx_split_ops: list[str] = []
-        else:
-            fx_split_ops = self.compilation_config.splitting_ops or []
+        # if self.compilation_config.use_inductor_graph_partition:
+        #     # Let Inductor decide partitioning; avoid FX-level pre-splitting.
+        #     fx_split_ops: list[str] = []
+        # else:
+        #     fx_split_ops = self.compilation_config.splitting_ops or []
 
-        resolved_split_ops = resolve_defined_ops(fx_split_ops)
-        self.split_gm, self.piecewise_graphs = split_graph(graph, resolved_split_ops)
+        # resolved_split_ops = resolve_defined_ops(fx_split_ops)
+        self.split_gm, self.piecewise_graphs = split_graph(
+            graph, self.compilation_config.splitting_ops or []
+        )
 
         from torch._dynamo.utils import lazy_format_graph_code
 

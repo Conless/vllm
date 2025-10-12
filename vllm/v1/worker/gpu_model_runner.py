@@ -2452,7 +2452,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 ) = self._prepare_inputs(scheduler_output)
 
             dp_rank = self.parallel_config.data_parallel_rank
-            if ubatch_slices:
+            if ubatch_slices and self.parallel_config.enable_dbo:
                 assert num_tokens_across_dp is not None
                 num_input_tokens = int(num_tokens_across_dp[dp_rank].item())
                 self.pad_out_ubatch_slice(ubatch_slices, num_input_tokens)
@@ -3286,15 +3286,25 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # We currently only microbatch if the number of tokens is
         # over a certain threshold.
-        ubatch_slices, num_tokens_across_dp = coordinate_batch_across_dp(
-            num_tokens_unpadded=total_num_scheduled_tokens,
-            parallel_config=self.vllm_config.parallel_config,
-            allow_microbatching=allow_microbatching,
-            allow_dp_padding=allow_dp_padding,
-            num_tokens_padded=total_num_scheduled_tokens,
-            uniform_decode=uniform_decode,
-            num_scheduled_tokens_per_request=num_scheduled_tokens,
-        )
+        if self.compilation_config.enable_nano_batch_split:
+            try:
+                ubatch_slices, num_tokens_across_dp = nano_ubatch_split(
+                    num_scheduled_tokens,
+                    total_num_scheduled_tokens,
+                    total_num_scheduled_tokens,
+                )
+            except ValueError:
+                ubatch_slices, num_tokens_across_dp = None, None
+        else:
+            ubatch_slices, num_tokens_across_dp = coordinate_batch_across_dp(
+                num_tokens_unpadded=total_num_scheduled_tokens,
+                parallel_config=self.vllm_config.parallel_config,
+                allow_microbatching=allow_microbatching,
+                allow_dp_padding=allow_dp_padding,
+                num_tokens_padded=total_num_scheduled_tokens,
+                uniform_decode=uniform_decode,
+                num_scheduled_tokens_per_request=num_scheduled_tokens,
+            )
         num_tokens_after_padding = num_tokens
         if num_tokens_across_dp is not None:
             dp_rank = self.parallel_config.data_parallel_rank
