@@ -323,6 +323,11 @@ class VllmConfig:
             else:
                 nano_batch_splitting_ops = [
                     "vllm.all_reduce",
+                    "vllm.moe_forward_dispatch",
+                    "vllm.moe_forward_shared",
+                    "vllm.moe_forward_expert",
+                    "vllm.moe_forward_combine",
+                    "vllm.moe_forward_combine_with_shared",
                 ]
                 if self.compilation_config.splitting_ops and set(
                     self.compilation_config.splitting_ops
