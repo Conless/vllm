@@ -64,8 +64,13 @@ def nano_ubatch_split(
             ]
             for i in range(split_config.num_nano_batches)
         ]
+        cu_num_tokens_across_dp = [
+            [sum(tokens[: i + 1]) for i in range(len(tokens))]
+            for tokens in num_tokens_across_dp
+        ]
         total_num_tokens_across_dp = [
-            sum(tokens[i] for tokens in num_tokens_across_dp) for i in range(dp_size)
+            sum(tokens[i] for tokens in num_tokens_across_dp)
+            for i in range(dp_size)
         ]
         max_tokens_across_dp = [max(tokens) for tokens in num_tokens_across_dp]
         dp_metadatas = [
@@ -75,8 +80,8 @@ def nano_ubatch_split(
                     device="cpu",
                     dtype=torch.int32,
                 ),
-                num_tokens_across_dp_cpu=torch.tensor(
-                    num_tokens_across_dp[i],
+                cu_tokens_across_dp_cpu=torch.tensor(
+                    cu_num_tokens_across_dp[i],
                     device="cpu",
                     dtype=torch.int32,
                 ),
@@ -123,7 +128,9 @@ def nano_ubatch_split(
 
     return (
         [first_slice, second_slice],
-        torch.tensor(total_num_tokens_across_dp, device="cpu", dtype=torch.int32),
+        torch.tensor(
+            total_num_tokens_across_dp, device="cpu", dtype=torch.int32
+        ),
     )
 
 

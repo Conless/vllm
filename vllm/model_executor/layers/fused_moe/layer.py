@@ -1802,17 +1802,17 @@ class FusedMoE(CustomOp):
                 shared_output, fused_output = self.forward_impl(
                     hidden_states, router_logits)
             else:
-                # shared_output, fused_output = torch.ops.vllm.moe_forward_shared(
+                # shared_output, fused_output = torch.ops.vllm.moe_forward_with_shared(
                 #     hidden_states, router_logits, self.layer_name
                 # )
+                shared_output = \
+                    torch.ops.vllm.moe_forward_shared(
+                        hidden_states,
+                        self.layer_name)
                 hidden_states, router_logits = \
                     torch.ops.vllm.moe_forward_dispatch(
                         hidden_states,
                         router_logits,
-                        self.layer_name)
-                shared_output = \
-                    torch.ops.vllm.moe_forward_shared(
-                        hidden_states,
                         self.layer_name)
                 final_hidden_states = \
                     torch.ops.vllm.moe_forward_expert(
@@ -2260,7 +2260,7 @@ def moe_forward_combine_with_shared(shared_output: torch.Tensor,
                         layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
-    return self.forward_impl_combine((final_hidden_states, shared_output))
+    return self.forward_impl_combine((shared_output, final_hidden_states))
 
 
 def moe_forward_combine_with_shared_fake(

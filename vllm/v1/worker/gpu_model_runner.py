@@ -1045,7 +1045,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 ubatch_split(num_scheduled_tokens,
                             num_tokens_unpadded,
                             num_tokens_padded,
-                            vllm_config=self.vllm_config)
+                            self.vllm_config)
 
         self.seq_lens.np[:num_reqs] = (
             self.input_batch.num_computed_tokens_cpu[:num_reqs] +
@@ -2168,18 +2168,18 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Prepare the decoder inputs.
                 (attn_metadata, logits_indices, spec_decode_metadata,
                  num_scheduled_tokens_np, spec_decode_common_attn_metadata,
-                 max_query_len, ubatch_slices, num_tokens_after_padding
+                 max_query_len, ubatch_slices, num_tokens_across_dp
                  ) = self._prepare_inputs(scheduler_output)
 
             num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             dp_group = get_dp_group()
-            dp_rank = dp_group.rank
+            dp_rank = dp_group.rank_in_group
             if ubatch_slices and self.parallel_config.enable_dbo:
-                assert num_tokens_after_padding is not None
-                num_input_tokens = int(num_tokens_after_padding[dp_rank].item())
+                assert num_tokens_across_dp is not None
+                num_input_tokens = int(num_tokens_across_dp[dp_rank].item())
                 self.pad_out_ubatch_slice(ubatch_slices, num_input_tokens)
-            elif num_tokens_after_padding is not None:
-                num_input_tokens = int(num_tokens_after_padding[dp_rank].item())
+            elif num_tokens_across_dp is not None:
+                num_input_tokens = int(num_tokens_across_dp[dp_rank].item())
             else:
                 num_input_tokens = self._get_num_input_tokens(
                     scheduler_output.total_num_scheduled_tokens
@@ -2925,15 +2925,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # over a certain threshold.
         if self.compilation_config.enable_nano_batch_split:
             try:
-                ubatch_slices, num_tokens_across_dp = nano_ubatch_split(
+                ubatch_slices, num_tokens_after_padding = nano_ubatch_split(
                     num_scheduled_tokens,
                     total_num_scheduled_tokens,
                     total_num_scheduled_tokens,
                 )
             except ValueError:
-                pass
+                ubatch_slices = None
+                num_tokens_after_padding = None
         elif self.parallel_config.enable_dbo and allow_microbatching:
-            ubatch_slices, ubatch_num_tokens_after_padding = ubatch_split(
+            ubatch_slices, num_tokens_after_padding = ubatch_split(
                 num_scheduled_tokens,
                 total_num_scheduled_tokens,
                 total_num_scheduled_tokens,
