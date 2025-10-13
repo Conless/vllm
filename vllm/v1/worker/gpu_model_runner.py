@@ -31,7 +31,7 @@ from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
 from vllm.distributed.parallel_state import (
-    get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
+    get_dp_group, get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
     prepare_communication_buffer_for_model)
 from vllm.forward_context import (BatchDescriptor, DPMetadata,
                                   set_forward_context)
@@ -1874,23 +1874,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def _preprocess(
         self,
         scheduler_output: "SchedulerOutput",
+        num_input_tokens: int,
         intermediate_tensors: Optional[IntermediateTensors] = None,
-        ubatch_slices: Optional[UBatchSlices] = None,
-        num_tokens_after_padding: Optional[torch.Tensor] = None,
-    ) -> tuple[int, int, Optional[torch.Tensor], Optional[torch.Tensor],
+    ) -> tuple[int, Optional[torch.Tensor],
                Optional[torch.Tensor], torch.Tensor,
                Optional[IntermediateTensors], dict[str, Any]]:
-
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-        if ubatch_slices and self.parallel_config.enable_dbo:
-            assert num_tokens_after_padding is not None
-            num_input_tokens = int(num_tokens_after_padding[0].item() * 2)
-            self.pad_out_ubatch_slice(ubatch_slices, num_input_tokens)
-        else:
-            num_input_tokens = self._get_num_input_tokens(num_scheduled_tokens)
-            num_pad, num_tokens_after_padding = self.get_dp_padding(
-                num_input_tokens)
-            num_input_tokens += num_pad
 
         # _prepare_inputs may reorder the batch, so we must gather multi
         # modal outputs after that to ensure the correct order
@@ -1970,8 +1959,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         return (
             num_scheduled_tokens,
-            num_input_tokens,
-            num_tokens_after_padding,
             input_ids,
             inputs_embeds,
             positions,
@@ -2184,17 +2171,28 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                  max_query_len, ubatch_slices, num_tokens_after_padding
                  ) = self._prepare_inputs(scheduler_output)
 
+            num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+            dp_group = get_dp_group()
+            dp_rank = dp_group.rank
+            if ubatch_slices and self.parallel_config.enable_dbo:
+                assert num_tokens_after_padding is not None
+                num_input_tokens = int(num_tokens_after_padding[dp_rank].item())
+                self.pad_out_ubatch_slice(ubatch_slices, num_input_tokens)
+            elif num_tokens_after_padding is not None:
+                num_input_tokens = int(num_tokens_after_padding[dp_rank].item())
+            else:
+                num_input_tokens = self._get_num_input_tokens(
+                    scheduler_output.total_num_scheduled_tokens
+                )
+
             (
                 num_scheduled_tokens,
-                num_input_tokens,
-                num_tokens_across_dp,
                 input_ids,
                 inputs_embeds,
                 positions,
                 intermediate_tensors,
                 model_kwargs,
-            ) = self._preprocess(scheduler_output, intermediate_tensors,
-                                 ubatch_slices, num_tokens_after_padding)
+            ) = self._preprocess(scheduler_output, num_input_tokens, intermediate_tensors)
 
             uniform_decode = (max_query_len
                               == self.uniform_decode_query_len) and (
@@ -2204,11 +2202,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                uniform_decode=uniform_decode)
             cudagraph_runtime_mode, batch_descriptor = \
                 self.cudagraph_dispatcher.dispatch(batch_descriptor)
-
-        # This is currently to get around the assert in the DPMetadata
-        # where it wants `num_tokens_across_dp` to align with `num_tokens`
-        if ubatch_slices is not None and self.parallel_config.enable_dbo:
-            num_input_tokens = ubatch_slices[0].num_tokens
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
@@ -2931,11 +2924,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # We currently only microbatch if the number of tokens is
         # over a certain threshold.
         if self.compilation_config.enable_nano_batch_split:
-            ubatch_slices, num_tokens_across_dp = nano_ubatch_split(
-                num_scheduled_tokens,
-                total_num_scheduled_tokens,
-                total_num_scheduled_tokens,
-            )
+            try:
+                ubatch_slices, num_tokens_across_dp = nano_ubatch_split(
+                    num_scheduled_tokens,
+                    total_num_scheduled_tokens,
+                    total_num_scheduled_tokens,
+                )
+            except ValueError:
+                pass
         elif self.parallel_config.enable_dbo and allow_microbatching:
             ubatch_slices, ubatch_num_tokens_after_padding = ubatch_split(
                 num_scheduled_tokens,
