@@ -582,13 +582,14 @@ class VllmBackend:
         submod_names_to_compile = [
             item.submod_name for item in self.piecewise_graphs
             if not item.is_splitting_graph
+            and int(item.submod_name.split("_")[-1]) % 8 == 0
         ]
 
         # propagate the split graph to the piecewise backend,
         # compile submodules with symbolic shapes
-        # PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
-        #                             self.vllm_config,
-        #                             self).run(*example_inputs)
+        PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
+                                    self.vllm_config,
+                                    self).run(*example_inputs)
 
         graph_path = os.path.join(local_cache_dir, "computation_graph.py")
         if not os.path.exists(graph_path):

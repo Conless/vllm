@@ -46,6 +46,7 @@ class NanoInferManager:
                 "vllm.all_reduce": "network",
                 "vllm.moe_forward_dispatch": "network",
                 "vllm.moe_forward_combine": "network",
+                "vllm.moe_forward_combine_with_shared": "network"
             },
         )
         self.scheduler = NanoFlowScheduler(

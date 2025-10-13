@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 from typing_extensions import override
 
-from vllm.nanoinfer.interface import InputInfo, OpSchedulerBase, SplitConfig
+from vllm.nanoinfer.interface import ExecutionContext, InputInfo, OpSchedulerBase, SplitConfig
 
 
 @dataclass
@@ -52,17 +52,7 @@ class NanoFlowScheduler(OpSchedulerBase):
             )
 
     @override
-    async def schedule(self, context) -> None:
-        """Schedule operators with stream overlap using async interface.
-
-        This scheduler:
-        - Pops operators from all nano-batches in lockstep
-        - Assigns network ops to comm_stream, others to comp_stream
-        - Engine handles cross-stream synchronization via events
-        """
-        from vllm.nanoinfer.interface import ExecutionContext
-        assert isinstance(context, ExecutionContext)
-
+    async def schedule(self, context: ExecutionContext) -> None:
         num_batches = context.split_config.num_nano_batches
         batch_indices = list(range(num_batches))
 
@@ -83,11 +73,3 @@ class NanoFlowScheduler(OpSchedulerBase):
                     stream = self.comp_stream
                 with torch.cuda.stream(stream):
                     await context.execute((op, ))
-
-        stream_events = [torch.cuda.Event(), torch.cuda.Event()]
-        with torch.cuda.stream(self.comp_stream):
-            stream_events[0].record()
-        with torch.cuda.stream(self.comm_stream):
-            stream_events[1].record()
-        for event in stream_events:
-            event.wait()

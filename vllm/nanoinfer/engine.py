@@ -88,10 +88,12 @@ class NanoInferEngine:
             for i in range(num_nano_batches)
         }
 
-        last_event: dict[int, Optional[torch.cuda.Event]] = {
-            i: None
-            for i in range(num_nano_batches)
-        }
+        last_events = [
+            torch.cuda.Event()
+            for _ in range(num_nano_batches)
+        ]
+        for event in last_events:
+            event.record()
 
         for batch_idx in range(num_nano_batches):
             while node_queue[batch_idx]:
@@ -134,11 +136,8 @@ class NanoInferEngine:
             for op in operators:
                 batch_idx = op.nano_batch_idx
                 node = self.module_name_to_node[op.module_name]
-                if last_event[batch_idx] is not None:
-                    event = last_event[batch_idx]
-                    assert event is not None
-                    event.wait()
-                last_event[batch_idx] = torch.cuda.Event()
+                last_events[batch_idx].wait()
+                last_events[batch_idx] = torch.cuda.Event()
                 node_args.append([
                     env[batch_idx][arg] for arg in node.args
                     if isinstance(arg, torch.fx.Node)
@@ -170,9 +169,7 @@ class NanoInferEngine:
             for op, result in zip(operators, exec_results):
                 batch_idx = op.nano_batch_idx
                 node = self.module_name_to_node[op.module_name]
-                event = last_event[batch_idx]
-                assert event is not None
-                event.record()
+                last_events[batch_idx].record()
                 env[batch_idx][node] = result
                 assert op == pushed_operators[batch_idx][0]
                 pushed_operators[batch_idx].pop(0)
@@ -203,6 +200,8 @@ class NanoInferEngine:
                         node_queue[batch_idx].popleft()
             done_event.set()
 
+        for event in last_events:
+            event.wait()
         return results
 
     def _execute_non_module(
