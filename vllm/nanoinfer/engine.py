@@ -60,7 +60,7 @@ class NanoInferEngine:
         hook: Optional[
             Callable[[tuple[OperatorHandle]],
                      contextlib.AbstractContextManager[None]]] = None,
-    ) -> dict[int, Any]:
+    ) -> tuple[dict[int, Any], list[torch.cuda.Event]]:
         """Execute the model with simplified single-loop pattern.
 
         Args:
@@ -200,9 +200,7 @@ class NanoInferEngine:
                         node_queue[batch_idx].popleft()
             done_event.set()
 
-        for event in last_events:
-            event.wait()
-        return results
+        return results, last_events
 
     def _execute_non_module(
         self,

@@ -100,12 +100,14 @@ class NanoInferManager:
         execute_queue = asyncio.Queue()
         context = ExecutionContext(self.cached_config, op_queue, execute_queue)
 
-        results_dict, _ = await asyncio.gather(
+        (results_dict, events), _ = await asyncio.gather(
             self.engine.execute(
                 args, kwargs, op_queue, execute_queue, self.cached_config, self.hook
             ),
             self.scheduler.schedule(context),
         )
+        for event in events:
+            event.wait()
         assert all(
             isinstance(e, type(results_dict[0])) for e in results_dict.values()
         ), f"Results have different types: {results_dict}"
