@@ -155,7 +155,6 @@ class CompilerManager:
         # try to load from the cache
         compiled_graph = self.load(graph, example_inputs, graph_index,
                                    runtime_shape)
-        compiled_graph = None
         if compiled_graph is not None:
             if graph_index == num_graphs - 1:
                 # after loading the last graph for this shape, record the time.
@@ -476,6 +475,11 @@ class VllmBackend:
         inductor_config[PASS_KEY] = self.post_grad_pass_manager
 
     def __call__(self, graph: fx.GraphModule, example_inputs) -> Callable:
+        if self.compilation_config.enable_nano_batch_split:
+            return nano_manager.get_callable(graph,
+                                             self.compilation_config,
+                                             example_inputs)
+
 
         vllm_config = self.vllm_config
         if not self.compilation_config.cache_dir:
@@ -583,7 +587,6 @@ class VllmBackend:
         submod_names_to_compile = [
             item.submod_name for item in self.piecewise_graphs
             if not item.is_splitting_graph
-            and int(item.submod_name.split("_")[-1]) % 8 == 0
         ]
 
         # propagate the split graph to the piecewise backend,
@@ -608,12 +611,7 @@ class VllmBackend:
 
         if self.compilation_config.cudagraph_mode == CUDAGraphMode.NONE or \
             not self.compilation_config.cudagraph_copy_inputs:
-            if self.compilation_config.enable_nano_batch_split:
-                return nano_manager.get_callable(self.split_gm,
-                                                 self.compilation_config,
-                                                 local_cache_dir)
-            else:
-                return self.split_gm
+            return self.split_gm
 
         # if we need to copy input buffers for cudagraph
         from torch._guards import detect_fake_mode
