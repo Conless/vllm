@@ -3,7 +3,7 @@
 
 import asyncio
 import contextlib
-from typing import Callable, Optional
+from typing import Any, Callable, List, Optional
 
 import torch
 
@@ -16,7 +16,9 @@ from vllm.nanoinfer.interface import (
     OperatorHandle,
     SplitConfig,
 )
+from vllm.nanoinfer.subgraph.config import SubgraphConfig
 from vllm.nanoinfer.utils import tag_graph
+from .subgraph.api import compile_subgraphs
 
 
 class NanoInferManager:
@@ -31,9 +33,11 @@ class NanoInferManager:
         self,
         graph_module: torch.fx.GraphModule,
         compilation_config: CompilationConfig,
-        local_cache_dir: Optional[str] = None,
+        example_inputs: List[Any],
     ):
-        self.graph_module = graph_module
+        self.graph_module = compile_subgraphs(graph_module, SubgraphConfig(
+        splitting_ops=compilation_config.splitting_ops,
+    ), example_inputs)
         self.cached_config: Optional[SplitConfig] = None
         self.hook: Optional[
             Callable[[tuple[OperatorHandle]], contextlib.AbstractContextManager[None]]
@@ -138,11 +142,11 @@ _manager = None
 def get_callable(
     graph_module: torch.fx.GraphModule,
     compilation_config: CompilationConfig,
-    local_cache_dir: Optional[str] = None,
+    example_inputs: List[Any],
 ) -> Callable:
     global _manager
     if _manager is None:
-        _manager = NanoInferManager(graph_module, compilation_config, local_cache_dir)
+        _manager = NanoInferManager(graph_module, compilation_config, example_inputs)
     return _manager.get_callable()
 
 
