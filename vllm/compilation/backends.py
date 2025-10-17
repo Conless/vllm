@@ -155,6 +155,7 @@ class CompilerManager:
         # try to load from the cache
         compiled_graph = self.load(graph, example_inputs, graph_index,
                                    runtime_shape)
+        compiled_graph = None
         if compiled_graph is not None:
             if graph_index == num_graphs - 1:
                 # after loading the last graph for this shape, record the time.

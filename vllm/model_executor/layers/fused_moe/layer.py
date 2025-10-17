@@ -2202,6 +2202,26 @@ direct_register_custom_op(
     tags=(torch.Tag.needs_fixed_stride_order, ),
 )
 
+def moe_forward_with_shared(hidden_states: torch.Tensor,
+                            router_logits: torch.Tensor,
+                            layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    assert self.shared_experts is not None
+    return self.forward_impl(hidden_states, router_logits)
+
+def moe_forward_with_shared_fake(hidden_states: torch.Tensor,
+                                 router_logits: torch.Tensor,
+                                 layer_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.empty_like(hidden_states), torch.empty_like(hidden_states)
+
+direct_register_custom_op(
+    op_name="moe_forward_with_shared",
+    op_func=moe_forward_with_shared,
+    mutates_args=["hidden_states"],
+    fake_impl=moe_forward_with_shared_fake,
+    dispatch_key=current_platform.dispatch_key,
+)
 
 def moe_forward_dispatch(hidden_states: torch.Tensor,
                          router_logits: torch.Tensor,
