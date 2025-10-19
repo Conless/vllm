@@ -18,6 +18,8 @@ import vllm.envs as envs
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
 from vllm.nanoinfer import manager as nano_manager
+from vllm.nanoinfer.config import CUDAGraphConfig, InductorConfig, NanoInferConfig
+from vllm.nanoinfer.example.nanoflow import NanoFlowSchedulerConfig
 from vllm.platforms import current_platform
 from vllm.utils import is_torch_equal_or_newer, resolve_obj_by_qualname
 
@@ -499,8 +501,8 @@ class VllmBackend:
             nanoinfer_config = NanoInferConfig(
                 splitting_ops=self.compilation_config.splitting_ops or [],
                 special_ops={
-                    # "vllm.unified_attention": "memory",
-                    # "vllm.unified_attention_with_output": "memory",
+                    "vllm.unified_attention": "memory",
+                    "vllm.unified_attention_with_output": "memory",
                     # "vllm.all_reduce": "network",
                     # "vllm.moe_forward_dispatch": "network",
                     # "vllm.moe_forward_combine": "network",
