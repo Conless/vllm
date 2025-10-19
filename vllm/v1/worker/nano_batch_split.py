@@ -18,7 +18,9 @@ def nano_ubatch_split(
     num_scheduled_tokens_per_request: np.ndarray,
     num_tokens_unpadded: int,
     num_tokens_padded: int,
-) -> tuple[Optional[UBatchSlices], Optional[torch.Tensor]]:
+    is_dummy_run: bool = False,
+    use_cudagraph: bool = False,
+) -> tuple[UBatchSlices, torch.Tensor]:
     """
     Prepare two UBatch-compatible nano-batch slices.
 
@@ -27,18 +29,16 @@ def nano_ubatch_split(
     - Computes a single token split point using custom logic to remain
       compatible with UBatch execution.
     """
-    assert num_tokens_unpadded == num_tokens_padded
     batch_size = int(len(num_scheduled_tokens_per_request))
     tokens_list = num_scheduled_tokens_per_request.tolist()
-    split_config = nano_manager.prepare_nano_split(batch_size, tokens_list)
+    split_config = nano_manager.prepare_nano_split(
+        batch_size, tokens_list, is_dummy_run, use_cudagraph
+    )
     dp_group = get_dp_group()
     dp_size, dp_rank = dp_group.world_size, dp_group.rank
     if dp_size == 1:
-        if getattr(split_config, "num_nano_batches", 1) <= 1:
-            return (None, None)
-        assert split_config.num_nano_batches == 2
         dp_metadatas = None
-        total_num_tokens_across_dp = [num_tokens_padded]
+        total_num_tokens_across_dp = [sum(split_config.num_tokens_padded)]
     else:
         dp_nano_split_config: list[Optional[SplitConfig]] = [
             None for _ in range(dp_size)
@@ -54,11 +54,30 @@ def nano_ubatch_split(
             if remote_config.num_nano_batches == 1:
                 disable_nano_split = True
         if disable_nano_split:
-            nano_manager.disable_nano_split()
-            return (None, None)
+            split_config = SplitConfig(
+                num_nano_batches=1,
+                batch_sizes=[batch_size],
+                batch_indices=[0, batch_size],
+                num_tokens=[num_tokens_unpadded],
+                num_tokens_padded=[num_tokens_padded],
+                split_indices=[0, num_tokens_unpadded],
+                is_dryrun=is_dummy_run,
+                use_cudagraph=use_cudagraph,
+            )
+            nano_manager.override_split_config(split_config)
+            dp_nano_split_config[dp_rank] = split_config
+            for i in range(dp_size):
+                dp_nano_split_config[i] = dp_group.broadcast_object(
+                    dp_nano_split_config[i], src=i
+                )
+            assert all(
+                config is not None and config.num_nano_batches == 1
+                for config in dp_nano_split_config
+            )
+
         num_tokens_across_dp = [
             [
-                config.num_tokens[i]
+                config.num_tokens_padded[i]
                 for config in dp_nano_split_config
                 if config is not None
             ]
@@ -86,22 +105,13 @@ def nano_ubatch_split(
                     dtype=torch.int32,
                 ),
                 local_sizes=[
-                    config.num_tokens[i]
+                    config.num_tokens_padded[i]
                     for config in dp_nano_split_config
                     if config is not None
                 ],
             )
             for i in range(split_config.num_nano_batches)
         ]
-
-    first_slice = UBatchSlice(
-        slice(0, split_config.batch_indices[1]),
-        slice(0, split_config.split_indices[1]),
-    )
-    second_slice = UBatchSlice(
-        slice(split_config.batch_indices[1], batch_size),
-        slice(split_config.split_indices[1], split_config.split_indices[2]),
-    )
 
     @contextmanager
     def op_hook(op_info: tuple[OperatorHandle]):
@@ -127,12 +137,21 @@ def nano_ubatch_split(
     nano_manager.set_op_hook(op_hook)
 
     return (
-        [first_slice, second_slice],
+        [
+            UBatchSlice(
+                slice(
+                    split_config.batch_indices[i],
+                    split_config.batch_indices[i + 1],
+                ),
+                slice(
+                    split_config.split_indices[i],
+                    split_config.split_indices[i + 1],
+                ),
+            )
+            for i in range(split_config.num_nano_batches)
+        ],
+        # The padding will be handled by the NanoInfer engine.
         torch.tensor(
             total_num_tokens_across_dp, device="cpu", dtype=torch.int32
         ),
     )
-
-
-def disable_nano_split():
-    nano_manager.disable_nano_split()

@@ -1039,7 +1039,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 nano_ubatch_split(
                     num_scheduled_tokens,
                     num_tokens_unpadded,
-                    num_tokens_padded)
+                    num_tokens_padded,
+                    is_dummy_run=False,
+                    use_cudagraph=(
+                        self.compilation_config.cudagraph_mode == \
+                            CUDAGraphMode.PIECEWISE
+                    )
+                )
         else:
             ubatch_slices, num_tokens_after_padding = \
                 ubatch_split(num_scheduled_tokens,
@@ -2924,15 +2930,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # We currently only microbatch if the number of tokens is
         # over a certain threshold.
         if self.compilation_config.enable_nano_batch_split:
-            try:
-                ubatch_slices, num_tokens_after_padding = nano_ubatch_split(
-                    num_scheduled_tokens,
-                    total_num_scheduled_tokens,
-                    total_num_scheduled_tokens,
-                )
-            except ValueError:
-                ubatch_slices = None
-                num_tokens_after_padding = None
+            ubatch_slices, num_tokens_after_padding = nano_ubatch_split(
+                num_scheduled_tokens,
+                total_num_scheduled_tokens,
+                total_num_scheduled_tokens,
+                is_dummy_run=True,
+                use_cudagraph=cudagraph_runtime_mode == CUDAGraphMode.PIECEWISE,
+            )
         elif self.parallel_config.enable_dbo and allow_microbatching:
             ubatch_slices, num_tokens_after_padding = ubatch_split(
                 num_scheduled_tokens,

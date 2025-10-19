@@ -18,10 +18,24 @@ class SplitConfig:
     """Configuration for nano-batch splitting."""
 
     num_nano_batches: int
+    """Number of nano-batches to split the batch into."""
     batch_sizes: list[int]
+    """Sizes of each nano-batch. Length: num_nano_batches."""
     batch_indices: list[int]
+    """Indices of the start and end of each nano-batch.
+    Length: num_nano_batches + 1."""
     num_tokens: list[int]
+    """Number of tokens in each nano-batch. Length: num_nano_batches."""
+    num_tokens_padded: list[int]
+    """Number of tokens in each nano-batch after padding.
+    Length: num_nano_batches."""
     split_indices: list[int]
+    """Indices of the start and end of each nano-batch.
+    Length: num_nano_batches + 1."""
+    is_dryrun: bool
+    """Whether this is a dry run."""
+    use_cudagraph: bool
+    """Whether to use CUDA graph."""
 
 
 @dataclass(eq=False, frozen=True)
@@ -79,7 +93,11 @@ class OpSchedulerBase(ABC):
         self.policy_name = policy_name
 
     @abstractmethod
-    def get_split_config(self, input_info: InputInfo) -> SplitConfig:
+    def get_split_config(
+        self,
+        input_info: InputInfo,
+        use_cudagraph: bool,
+    ) -> SplitConfig:
         pass
 
     @abstractmethod

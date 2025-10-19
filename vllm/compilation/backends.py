@@ -476,10 +476,45 @@ class VllmBackend:
 
     def __call__(self, graph: fx.GraphModule, example_inputs) -> Callable:
         if self.compilation_config.enable_nano_batch_split:
-            return nano_manager.get_callable(graph,
-                                             self.compilation_config,
-                                             example_inputs)
-
+            scheduler_config = NanoFlowSchedulerConfig(
+                min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
+                max_num_nano_batches=self.compilation_config.max_num_nano_batches,
+                cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
+                or [],
+            )
+            inductor_config = InductorConfig(
+                compile_sizes=set(
+                    [
+                        int(size)
+                        for size in self.compilation_config.compile_sizes or []
+                    ]
+                ),
+            )
+            cudagraph_config = CUDAGraphConfig(
+                enabled=self.compilation_config.cudagraph_mode
+                == CUDAGraphMode.PIECEWISE,
+                capture_sizes=self.compilation_config.cudagraph_capture_sizes
+                or [],
+            )
+            nanoinfer_config = NanoInferConfig(
+                splitting_ops=self.compilation_config.splitting_ops or [],
+                special_ops={
+                    # "vllm.unified_attention": "memory",
+                    # "vllm.unified_attention_with_output": "memory",
+                    # "vllm.all_reduce": "network",
+                    # "vllm.moe_forward_dispatch": "network",
+                    # "vllm.moe_forward_combine": "network",
+                    # "vllm.moe_forward_combine_with_shared": "network",
+                },
+                scheduler_config=scheduler_config,
+                inductor_config=inductor_config,
+                cudagraph_config=cudagraph_config,
+            )
+            return nano_manager.get_callable(
+                graph,
+                nanoinfer_config,
+                example_inputs,
+            )
 
         vllm_config = self.vllm_config
         if not self.compilation_config.cache_dir:
