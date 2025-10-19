@@ -3,23 +3,13 @@
 from typing import Any
 import torch
 
-from dataclasses import dataclass
-
 from vllm.nanoinfer.config import NanoInferConfig
 from vllm.nanoinfer.backend import SubgraphCompileInterpreter
 
 
-@dataclass
-class SplitItem:
-    submod_name: str
-    graph_id: int
-    is_splitting_graph: bool
-    graph: torch.fx.GraphModule
-
-
 def split_graph(
     graph: torch.fx.GraphModule, splitting_ops: list[str]
-) -> tuple[torch.fx.GraphModule, list[SplitItem]]:
+) -> torch.fx.GraphModule:
     """
     Split a traced fullgraph into subgraphs by op boundaries (if ops provided),
     producing a stitched GraphModule with submodules submod_0, submod_1, ...
@@ -46,27 +36,7 @@ def split_graph(
         keep_original_order=True,
     )
 
-    items: list[SplitItem] = []
-    names = [name for (name, module) in split_gm.named_modules()]
-    for name in names:
-        if "." in name or name == "":
-            continue
-        module = getattr(split_gm, name)
-        gid = (
-            int(name.replace("submod_", ""))
-            if name.startswith("submod_")
-            else 0
-        )
-        items.append(
-            SplitItem(
-                submod_name=name,
-                graph_id=gid,
-                is_splitting_graph=(gid in split_op_graphs),
-                graph=module,
-            )
-        )
-    items.sort(key=lambda x: x.graph_id)
-    return split_gm, items
+    return split_gm
 
 
 def tag_graph(gm: torch.fx.GraphModule, op_tags: dict[str, str]) -> None:
@@ -75,14 +45,17 @@ def tag_graph(gm: torch.fx.GraphModule, op_tags: dict[str, str]) -> None:
         for (name, module) in gm.named_modules()
         if hasattr(module, "graph")
     ]
-    for _, module in submodules:
+    for name, module in submodules:
+        if "." in name or name == "":
+            continue
+        module.tag = "" # type: ignore
         for node in module.graph.nodes:
             if (
                 node.op == "call_function"
                 and (tag := op_tags.get(str(node.target))) is not None
             ):
                 assert (
-                    getattr(module, "tag", None) is None or module.tag == tag
+                    module.tag == "" or module.tag == tag
                 ), f"tag mismatch: {module.tag} != {tag}"
                 module.tag = tag # type: ignore
 
@@ -92,9 +65,10 @@ def compile_subgraphs(
     config: NanoInferConfig,
     example_inputs: list[Any],
 ) -> torch.fx.GraphModule:
-    stitched_gm, items = split_graph(fullgraph, config.splitting_ops)
+    stitched_gm = split_graph(fullgraph, config.splitting_ops)
     tag_graph(stitched_gm, config.special_ops)
-    targets = [it.submod_name for it in items if not it.is_splitting_graph]
+    targets = [name for name, module in stitched_gm.named_modules() if hasattr(module, "tag") and module.tag != "memory"]
+    print("targets: ", targets)
     SubgraphCompileInterpreter(stitched_gm, targets, config).run(
         *example_inputs
     )
