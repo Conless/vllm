@@ -485,6 +485,7 @@ class VllmBackend:
                 or [],
             )
             inductor_config = InductorConfig(
+                enabled=True,
                 compile_sizes=set(
                     [
                         int(size)
@@ -501,12 +502,14 @@ class VllmBackend:
             nanoinfer_config = NanoInferConfig(
                 splitting_ops=self.compilation_config.splitting_ops or [],
                 special_ops={
-                    "vllm.unified_attention": "memory",
-                    "vllm.unified_attention_with_output": "memory",
-                    "vllm.all_reduce": "network",
-                    # "vllm.moe_forward_dispatch": "network",
-                    # "vllm.moe_forward_combine": "network",
-                    # "vllm.moe_forward_combine_with_shared": "network",
+                    "vllm.unified_attention": {"attention"},
+                    "vllm.unified_attention_with_output": {"attention"},
+                    "vllm.all_reduce": {"network"},
+                    "vllm.moe_forward_dispatch": {"moe", "network"},
+                    "vllm.moe_forward_shared": {"moe", "network"},
+                    "vllm.moe_forward_expert": {"moe", "network"},
+                    "vllm.moe_forward_combine": {"moe", "network"},
+                    "vllm.moe_forward_combine_with_shared": {"moe", "network"},
                 },
                 scheduler_config=scheduler_config,
                 inductor_config=inductor_config,

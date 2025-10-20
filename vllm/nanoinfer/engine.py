@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 
 import torch
 
+from vllm.nanoinfer.backend import SubgraphBackend
 from vllm.nanoinfer.config import NanoInferConfig
 from vllm.nanoinfer.context import NanoInferContext, set_forward_context
 from vllm.nanoinfer.interface import OperatorHandle, SplitConfig
@@ -124,10 +125,12 @@ class NanoInferEngine:
                 elif node.op == "call_module":
                     assert isinstance(node.target, str)
                     module = getattr(self.graph_module, node.target)
+                    assert isinstance(module, SubgraphBackend)
+                    assert isinstance(module.tag, set)
                     op_handle = OperatorHandle(
                         module_name=node.target,
-                        nano_batch_idx=batch_idx,
-                        debug_info={"tag": getattr(module, "tag", "")},
+                        nano_batch_idx=0, # Always 0 for dryrun
+                        tag=module.tag,
                     )
                     node_args = [
                         env[batch_idx][arg]
@@ -147,7 +150,6 @@ class NanoInferEngine:
                             if hook is not None
                             else contextlib.nullcontext()
                         ),
-                        torch.cuda.nvtx.range(f"op_{node.target}_{batch_idx}"),
                         set_forward_context(
                             NanoInferContext(
                                 nano_batch_idx=(batch_idx,),
@@ -240,7 +242,8 @@ class NanoInferEngine:
         }
 
         while any(node_queue.values()):
-            for batch_idx in range(num_nano_batches):
+            with torch.cuda.nvtx.range("prepare"):
+              for batch_idx in range(num_nano_batches):
                 while node_queue[batch_idx]:
                     if op_queue[batch_idx].full():
                         break
@@ -248,10 +251,11 @@ class NanoInferEngine:
                     if node.op == "call_module":
                         assert isinstance(node.target, str)
                         module = getattr(self.graph_module, node.target)
+                        assert isinstance(module.tag, set)
                         op_handle = OperatorHandle(
                             module_name=node.target,
                             nano_batch_idx=batch_idx,
-                            debug_info={"tag": getattr(module, "tag", "")},
+                            tag=module.tag,
                         )
                         await op_queue[batch_idx].put(op_handle)
                         pushed_operators[batch_idx].append(op_handle)
@@ -263,7 +267,8 @@ class NanoInferEngine:
             operators, func, done_event = item
             node_args = []
             node_kwargs = []
-            for op in operators:
+            with torch.cuda.nvtx.range("preprocess"):
+              for op in operators:
                 batch_idx = op.nano_batch_idx
                 node = self.module_name_to_node[op.module_name]
                 last_events[batch_idx].wait()
@@ -347,7 +352,8 @@ class NanoInferEngine:
                 assert op == pushed_operators[batch_idx][0]
                 pushed_operators[batch_idx].pop(0)
 
-            for batch_idx in range(num_nano_batches):
+            with torch.cuda.nvtx.range("postprocess"):
+              for batch_idx in range(num_nano_batches):
                 if pushed_operators[batch_idx]:
                     continue
                 while node_queue[batch_idx]:

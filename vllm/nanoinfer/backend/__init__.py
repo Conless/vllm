@@ -9,7 +9,11 @@ import torch.fx as fx
 
 from vllm.nanoinfer.backend.cudagraph import CUDAGraphWrapper
 from vllm.nanoinfer.backend.inductor import inductor_compile_fx_adaptor_style
-from vllm.nanoinfer.config import NanoInferConfig
+from vllm.nanoinfer.config import (
+    CUDAGraphConfig,
+    InductorConfig,
+    NanoInferConfig,
+)
 from vllm.nanoinfer.context import get_forward_context
 
 
@@ -18,11 +22,22 @@ class SubgraphBackend:
         self,
         subgraph_gm: fx.GraphModule,
         shape_arg_index: int,
-        config: NanoInferConfig,
+        inductor_config: InductorConfig,
+        cudagraph_config: CUDAGraphConfig,
+        *,
+        use_inductor: bool,
+        use_cudagraph: bool,
     ) -> None:
         self.gm = subgraph_gm
-        self.config = config
+        self.tag = getattr(subgraph_gm, "tag", set())
+        assert isinstance(self.tag, set)
+        self.inductor_config = inductor_config
+        self.cudagraph_config = cudagraph_config
         self.shape_arg_index = shape_arg_index
+        assert not use_inductor or inductor_config.enabled
+        assert not use_cudagraph or cudagraph_config.enabled
+        self.use_inductor = use_inductor
+        self.use_cudagraph = use_cudagraph
         self.callable_dynamic: Callable[..., Any] | None = None
         self.callables_per_size: dict[int, Callable[..., Any]] = {}
 
@@ -30,27 +45,32 @@ class SubgraphBackend:
         self, example_inputs: list[Any], runtime_shape: int | None = None
     ) -> Callable[..., Any]:
         shape = example_inputs[self.shape_arg_index]
-        assert (
-            (isinstance(shape, torch.SymInt) and runtime_shape is None)
-            or (int(shape) == runtime_shape)
+        assert (isinstance(shape, torch.SymInt) and runtime_shape is None) or (
+            int(shape) == runtime_shape
         )
-        fn = inductor_compile_fx_adaptor_style(
-            self.gm,
-            example_inputs,
-            inductor_cfg=self.config.inductor_config,
-            runtime_shape=runtime_shape,
+        fn = (
+            inductor_compile_fx_adaptor_style(
+                self.gm,
+                example_inputs,
+                inductor_cfg=self.inductor_config,
+                runtime_shape=runtime_shape,
+            )
+            if self.use_inductor
+            else self.gm
         )
-        if not self.config.cudagraph_config.enabled:
-            return fn
-        return CUDAGraphWrapper(fn, self.config.cudagraph_config)
+        return (
+            CUDAGraphWrapper(fn, self.cudagraph_config)
+            if self.use_cudagraph
+            else fn
+        )
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         assert self.shape_arg_index < len(args)
         size = int(args[self.shape_arg_index])
         if (
             size is not None
-            and self.config.inductor_config.compile_sizes is not None
-            and size in self.config.inductor_config.compile_sizes
+            and self.inductor_config.compile_sizes is not None
+            and size in self.inductor_config.compile_sizes
         ):
             if size not in self.callables_per_size:
                 assert get_forward_context().is_dryrun
@@ -64,12 +84,15 @@ class SubgraphCompileInterpreter(fx.Interpreter):
     def __init__(
         self,
         module: fx.GraphModule,
-        compile_submods: list[str],
         config: NanoInferConfig,
+        *,
+        inductor_compile_targets: list[str],
+        cudagraph_targets: list[str],
     ) -> None:
         super().__init__(module)
         self.config = config
-        self.compile_submods = set(compile_submods)
+        self.inductor_compile_targets = set(inductor_compile_targets)
+        self.cudagraph_targets = set(cudagraph_targets)
         from torch._guards import detect_fake_mode
 
         self.fake_mode = detect_fake_mode()
@@ -95,17 +118,21 @@ class SubgraphCompileInterpreter(fx.Interpreter):
     def call_module(self, target, args: tuple, kwargs: dict) -> Any:
         assert isinstance(target, str)
         out = super().call_module(target, args, kwargs)
-        if target in self.compile_submods:
-            submod = self.fetch_attr(target)
-            sym_shape_indices = [
-                i for i, x in enumerate(args) if isinstance(x, torch.SymInt)
-            ]
-            assert len(sym_shape_indices) > 0
-            primary_shape_index: int = sym_shape_indices[0]
-            assert isinstance(submod, fx.GraphModule)
-            backend = SubgraphBackend(
-                submod, primary_shape_index, self.config
-            )
-            backend.callable_dynamic = backend.compile(list(args))
-            self.module.__dict__[target] = backend
+        submod = self.fetch_attr(target)
+        sym_shape_indices = [
+            i for i, x in enumerate(args) if isinstance(x, torch.SymInt)
+        ]
+        assert len(sym_shape_indices) > 0
+        primary_shape_index: int = sym_shape_indices[0]
+        assert isinstance(submod, fx.GraphModule)
+        backend = SubgraphBackend(
+            submod,
+            primary_shape_index,
+            self.config.inductor_config,
+            self.config.cudagraph_config,
+            use_inductor=target in self.inductor_compile_targets,
+            use_cudagraph=target in self.cudagraph_targets,
+        )
+        backend.callable_dynamic = backend.compile(list(args))
+        self.module.__dict__[target] = backend
         return out

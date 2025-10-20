@@ -42,7 +42,7 @@ class SplitConfig:
 class OperatorHandle:
     module_name: str
     nano_batch_idx: int
-    debug_info: dict[str, str]
+    tag: set[str]
 
 
 class ExecutionContext:

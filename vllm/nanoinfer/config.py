@@ -16,13 +16,15 @@ SupportedSchedulerConfig = TypeVar(
 
 @dataclass
 class CUDAGraphConfig:
-    enabled: bool = False
+    enabled: bool
+    capture_sizes: list[int]
     weak_ref_output: bool = True
-    capture_sizes: list[int] = field(default_factory=list)
+    check_ptr_consistency: bool = False
 
 
 @dataclass
 class InductorConfig:
+    enabled: bool
     compile_sizes: set[int] | None = None
     options: dict | None = None
     disable_remote_cache: bool = True
@@ -32,7 +34,7 @@ class InductorConfig:
 @dataclass
 class NanoInferConfig(Generic[SupportedSchedulerConfig]):
     splitting_ops: list[str]
-    special_ops: dict[str, str]
+    special_ops: dict[str, set[str]]
     scheduler_config: SupportedSchedulerConfig
-    inductor_config: InductorConfig = InductorConfig()
-    cudagraph_config: CUDAGraphConfig = CUDAGraphConfig()
+    inductor_config: InductorConfig
+    cudagraph_config: CUDAGraphConfig

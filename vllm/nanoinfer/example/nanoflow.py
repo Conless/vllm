@@ -98,8 +98,7 @@ class NanoFlowScheduler(OpSchedulerBase):
                 ops.append((batch_idx, op))
 
             for batch_idx, op in ops:
-                tag = op.debug_info.get("tag", "")
-                if tag == "network":
+                if "network" in op.tag:
                     stream = self.comm_stream
                 else:
                     stream = self.comp_stream

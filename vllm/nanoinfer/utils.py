@@ -39,7 +39,7 @@ def split_graph(
     return split_gm
 
 
-def tag_graph(gm: torch.fx.GraphModule, op_tags: dict[str, str]) -> None:
+def tag_graph(gm: torch.fx.GraphModule, op_tags: dict[str, set[str]]) -> None:
     submodules = [
         (name, module)
         for (name, module) in gm.named_modules()
@@ -48,16 +48,13 @@ def tag_graph(gm: torch.fx.GraphModule, op_tags: dict[str, str]) -> None:
     for name, module in submodules:
         if "." in name or name == "":
             continue
-        module.tag = "" # type: ignore
+        module.tag = set()  # type: ignore
         for node in module.graph.nodes:
             if (
                 node.op == "call_function"
                 and (tag := op_tags.get(str(node.target))) is not None
             ):
-                assert (
-                    module.tag == "" or module.tag == tag
-                ), f"tag mismatch: {module.tag} != {tag}"
-                module.tag = tag # type: ignore
+                module.tag.update(tag)
 
 
 def compile_subgraphs(
@@ -67,11 +64,27 @@ def compile_subgraphs(
 ) -> torch.fx.GraphModule:
     stitched_gm = split_graph(fullgraph, config.splitting_ops)
     tag_graph(stitched_gm, config.special_ops)
-    targets = [name for name, module in stitched_gm.named_modules() if hasattr(module, "tag") and module.tag != "memory"]
-    print("targets: ", targets)
-    SubgraphCompileInterpreter(stitched_gm, targets, config).run(
-        *example_inputs
-    )
+    # MoE operators cannot be compiled with Inductor because their shape cannot
+    # be inferred statically
+    inductor_compile_targets = [
+        name
+        for name, module in stitched_gm.named_modules()
+        if isinstance(tag := getattr(module, "tag", None), set)
+        and "moe" not in tag
+    ] if config.inductor_config.enabled else []
+    # Attention operators cannot be captured by CUDAGraph
+    cudagraph_targets = [
+        name
+        for name, module in stitched_gm.named_modules()
+        if isinstance(tag := getattr(module, "tag", None), set)
+        and "attention" not in tag
+    ] if config.cudagraph_config.enabled else []
+    SubgraphCompileInterpreter(
+        stitched_gm,
+        config,
+        inductor_compile_targets=inductor_compile_targets,
+        cudagraph_targets=cudagraph_targets,
+    ).run(*example_inputs)
     return stitched_gm
 
 

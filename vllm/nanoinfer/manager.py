@@ -130,7 +130,9 @@ class NanoInferManager:
             and self.cached_config is not None
         )
         num_nano_batches = self.cached_config.num_nano_batches
-        op_queue = {i: asyncio.Queue() for i in range(num_nano_batches)}
+        op_queue = {
+            i: asyncio.Queue(maxsize=10) for i in range(num_nano_batches)
+        }
         execute_queue = asyncio.Queue()
         context = ExecutionContext(self.cached_config, op_queue, execute_queue)
 

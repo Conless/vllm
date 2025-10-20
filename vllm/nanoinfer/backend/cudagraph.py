@@ -11,9 +11,9 @@ from vllm.nanoinfer.context import get_forward_context
 
 class CUDAGraphPool:
     def __init__(self):
-        self.pools: dict[int, Any] = {}
+        self.pools: dict[int, tuple[int, int]] = {}
 
-    def get_pool(self, key: int) -> Any:
+    def get_pool(self, key: int) -> tuple[int, int]:
         from vllm.distributed.device_communicators.pynccl_allocator import (
             set_graph_pool_id,
         )
@@ -25,7 +25,7 @@ class CUDAGraphPool:
         return pool
 
 
-_pool = CUDAGraphPool()
+_global_pool = CUDAGraphPool()
 
 
 def _weak_ref_tensor(tensor: Any) -> Any:
@@ -79,7 +79,6 @@ class CUDAGraphWrapper:
             or size not in self.config.capture_sizes
         ):
             return self.runnable(*args, **kwargs)
-        
 
         key = (
             size,
@@ -89,7 +88,7 @@ class CUDAGraphWrapper:
         entry = self._entries.get(key)
         if entry is None:
             assert forward_context.is_dryrun
-            pool = _pool.get_pool(forward_context.nano_batch_idx[0])
+            pool = _global_pool.get_pool(forward_context.nano_batch_idx[0])
             cudagraph = torch.cuda.CUDAGraph()
             input_addresses = [
                 a.data_ptr() for a in args if isinstance(a, torch.Tensor)
@@ -104,10 +103,14 @@ class CUDAGraphWrapper:
             }
             return result
 
-        new_addrs = [a.data_ptr() for a in args if isinstance(a, torch.Tensor)]
-        if new_addrs != entry.get("inputs", new_addrs):
-            raise RuntimeError(
-                "CUDAGraph input addresses changed between capture and replay"
-            )
+        if self.config.check_ptr_consistency:
+            new_addrs = [
+                a.data_ptr() for a in args if isinstance(a, torch.Tensor)
+            ]
+            if new_addrs != entry.get("inputs", new_addrs):
+                raise RuntimeError(
+                    "CUDAGraph input addresses changed between capture and "
+                    "replay"
+                )
         entry["graph"].replay()
         return entry["out"]
