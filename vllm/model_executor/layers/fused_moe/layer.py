@@ -983,7 +983,7 @@ class FusedMoE(CustomOp):
                                                 self.moe_parallel_config)
 
         # For smuggling this layer into the fused moe custom op
-        compilation_config = vllm_config.compilation_config
+        self.compilation_config = compilation_config = vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError("Duplicate layer name: {}".format(prefix))
         compilation_config.static_forward_context[prefix] = self
@@ -1776,10 +1776,11 @@ class FusedMoE(CustomOp):
                 # will switch to using the moe_forward custom op.
                 fused_output = self.forward_impl(hidden_states, router_logits)
                 assert not isinstance(fused_output, tuple)
+            elif not self.compilation_config.enable_nano_batch_split:
+                fused_output = torch.ops.vllm.moe_forward(
+                    hidden_states, router_logits, self.layer_name
+                )
             else:
-                # fused_output = torch.ops.vllm.moe_forward(
-                #     hidden_states, router_logits, self.layer_name
-                # )
                 hidden_states, router_logits = \
                     torch.ops.vllm.moe_forward_dispatch(
                         hidden_states,
@@ -1801,10 +1802,11 @@ class FusedMoE(CustomOp):
                 # will switch to using the moe_forward custom op.
                 shared_output, fused_output = self.forward_impl(
                     hidden_states, router_logits)
+            elif not self.compilation_config.enable_nano_batch_split:
+                shared_output, fused_output = torch.ops.vllm.moe_forward_with_shared(
+                    hidden_states, router_logits, self.layer_name
+                )
             else:
-                # shared_output, fused_output = torch.ops.vllm.moe_forward_with_shared(
-                #     hidden_states, router_logits, self.layer_name
-                # )
                 shared_output = \
                     torch.ops.vllm.moe_forward_shared(
                         hidden_states,

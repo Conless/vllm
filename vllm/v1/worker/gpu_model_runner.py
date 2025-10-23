@@ -97,7 +97,7 @@ from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import (
     KVConnectorModelRunnerMixin)
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
-from vllm.v1.worker.nano_batch_split import nano_ubatch_split
+from vllm.v1.worker.schedflow import nano_ubatch_split
 from vllm.v1.worker.ubatch_splitting import (check_ubatch_thresholds,
                                              ubatch_split)
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices

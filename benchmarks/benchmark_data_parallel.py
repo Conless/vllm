@@ -20,6 +20,12 @@ from vllm.utils import FlexibleArgumentParser, get_open_port
 def create_argument_parser():
     parser = FlexibleArgumentParser(description="Benchmark the throughput.")
     parser.add_argument(
+        "--dp-size",
+        type=int,
+        default=2,
+        help="Data parallel size",
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=300,
@@ -177,7 +183,7 @@ if __name__ == "__main__":
     engine_args = EngineArgs.from_cli_args(args)
     engine_args.disable_log_stats = True
 
-    dp_size = 2
+    dp_size = args.dp_size
     dp_master_ip = "127.0.0.1"
     dp_master_port = get_open_port()
 
@@ -212,7 +218,7 @@ if __name__ == "__main__":
         procs.append(proc)
     exit_code = 0
     for proc in procs:
-        proc.join(timeout=1200)
+        proc.join(timeout=480)
         if proc.exitcode is None:
             print(f"Killing process {proc.pid} that didn't stop within 2 minutes.")
             proc.kill()

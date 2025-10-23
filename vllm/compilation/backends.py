@@ -17,11 +17,12 @@ from torch._dispatch.python import enable_python_dispatcher
 import vllm.envs as envs
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
-from vllm.nanoinfer import manager as nano_manager
-from vllm.nanoinfer.config import CUDAGraphConfig, InductorConfig, NanoInferConfig
-from vllm.nanoinfer.example.nanoflow import NanoFlowSchedulerConfig
+from schedflow.config import CUDAGraphConfig, InductorConfig, SchedFlowConfig
+from schedflow.example.nanoflow import NanoFlowSchedulerConfig
+from schedflow.example.dbo import DBOSchedulerConfig
 from vllm.platforms import current_platform
 from vllm.utils import is_torch_equal_or_newer, resolve_obj_by_qualname
+from vllm.v1.worker.schedflow import get_manager, get_scheduler
 
 from .compiler_interface import (CompilerInterface, EagerAdaptor,
                                  InductorAdaptor, InductorStandaloneAdaptor)
@@ -478,12 +479,22 @@ class VllmBackend:
 
     def __call__(self, graph: fx.GraphModule, example_inputs) -> Callable:
         if self.compilation_config.enable_nano_batch_split:
-            scheduler_config = NanoFlowSchedulerConfig(
-                min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
-                max_num_nano_batches=self.compilation_config.max_num_nano_batches,
-                cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
-                or [],
-            )
+            from vllm.distributed.parallel_state import get_dp_group
+            if get_dp_group().world_size > 1:
+                scheduler_config = DBOSchedulerConfig(
+                    min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
+                    max_num_nano_batches=self.compilation_config.max_num_nano_batches,
+                    cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
+                    or [],
+                )
+            else:
+                scheduler_config = NanoFlowSchedulerConfig(
+                    min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
+                    max_num_nano_batches=self.compilation_config.max_num_nano_batches,
+                    cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
+                    or [],
+                )
+            scheduler = get_scheduler(scheduler_config)
             inductor_config = InductorConfig(
                 enabled=True,
                 compile_sizes=set(
@@ -499,27 +510,17 @@ class VllmBackend:
                 capture_sizes=self.compilation_config.cudagraph_capture_sizes
                 or [],
             )
-            nanoinfer_config = NanoInferConfig(
-                splitting_ops=self.compilation_config.splitting_ops or [],
-                special_ops={
-                    "vllm.unified_attention": {"attention"},
-                    "vllm.unified_attention_with_output": {"attention"},
-                    "vllm.all_reduce": {"network"},
-                    "vllm.moe_forward_dispatch": {"moe", "network"},
-                    "vllm.moe_forward_shared": {"moe", "network"},
-                    "vllm.moe_forward_expert": {"moe", "network"},
-                    "vllm.moe_forward_combine": {"moe", "network"},
-                    "vllm.moe_forward_combine_with_shared": {"moe", "network"},
-                },
-                scheduler_config=scheduler_config,
+            schedflow_config = SchedFlowConfig(
+                max_num_nano_batches=scheduler_config.max_num_nano_batches,
                 inductor_config=inductor_config,
                 cudagraph_config=cudagraph_config,
             )
-            return nano_manager.get_callable(
+            return get_manager(
                 graph,
-                nanoinfer_config,
+                schedflow_config,
+                scheduler,
                 example_inputs,
-            )
+            ).get_callable()
 
         vllm_config = self.vllm_config
         if not self.compilation_config.cache_dir:

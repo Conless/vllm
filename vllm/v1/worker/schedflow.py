@@ -1,17 +1,50 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from contextlib import contextmanager
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
 
+from schedflow.config import SchedFlowConfig
 from vllm.distributed.parallel_state import get_dp_group
-from vllm.forward_context import DPMetadata, get_forward_context
-from vllm.nanoinfer import manager as nano_manager
-from vllm.nanoinfer.interface import OperatorHandle, SplitConfig
+from vllm.forward_context import DPMetadata
+from schedflow.manager import SchedFlowManager
+from schedflow.example.nanoflow import (
+    NanoFlowScheduler,
+    NanoFlowSchedulerConfig,
+)
+from schedflow.example.dbo import DBOScheduler, DBOSchedulerConfig
+from schedflow.interface import OpSchedulerBase, SplitConfig
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
+
+
+_manager = SchedFlowManager()
+_scheduler: NanoFlowScheduler | DBOScheduler | None = None
+
+
+def get_scheduler(
+    config: NanoFlowSchedulerConfig | DBOSchedulerConfig,
+) -> NanoFlowScheduler | DBOScheduler:
+    global _scheduler
+    if isinstance(config, NanoFlowSchedulerConfig):
+        _scheduler = NanoFlowScheduler(config)
+    elif isinstance(config, DBOSchedulerConfig):
+        _scheduler = DBOScheduler(config)
+    else:
+        raise ValueError(f"Invalid scheduler config: {config}")
+    return _scheduler
+
+
+def get_manager(
+    graph_module: torch.fx.GraphModule,
+    config: SchedFlowConfig,
+    scheduler: OpSchedulerBase,
+    example_inputs: list[Any],
+) -> SchedFlowManager:
+    global _manager
+    _manager.initialize(graph_module, config, scheduler, example_inputs)
+    return _manager
 
 
 def nano_ubatch_split(
@@ -31,8 +64,11 @@ def nano_ubatch_split(
     """
     batch_size = int(len(num_scheduled_tokens_per_request))
     tokens_list = num_scheduled_tokens_per_request.tolist()
-    split_config = nano_manager.prepare_nano_split(
-        batch_size, tokens_list, is_dummy_run, use_cudagraph
+    split_config = _manager.prepare(
+        batch_size,
+        tokens_list,
+        is_dryrun=is_dummy_run,
+        use_cudagraph=use_cudagraph,
     )
     dp_group = get_dp_group()
     dp_size, dp_rank = dp_group.world_size, dp_group.rank
@@ -64,7 +100,7 @@ def nano_ubatch_split(
                 is_dryrun=is_dummy_run,
                 use_cudagraph=use_cudagraph,
             )
-            nano_manager.override_split_config(split_config)
+            _manager.override_split_config(split_config)
             dp_nano_split_config[dp_rank] = split_config
             for i in range(dp_size):
                 dp_nano_split_config[i] = dp_group.broadcast_object(
@@ -113,28 +149,9 @@ def nano_ubatch_split(
             for i in range(split_config.num_nano_batches)
         ]
 
-    @contextmanager
-    def op_hook(op_info: tuple[OperatorHandle]):
-        assert len(op_info) == 1
-        ctx = get_forward_context()
-        attn_metadata_list = ctx.attn_metadata
-        if attn_metadata_list is not None:
-            assert isinstance(attn_metadata_list, list)
-            ctx.attn_metadata = attn_metadata_list[op_info[0].nano_batch_idx]
-        previous_dp_metadata = None
-        if dp_metadatas is not None:
-            previous_dp_metadata = ctx.dp_metadata
-            ctx.dp_metadata = dp_metadatas[op_info[0].nano_batch_idx]
-
-        try:
-            yield
-        finally:
-            ctx.attn_metadata = attn_metadata_list
-            if previous_dp_metadata is not None:
-                ctx.dp_metadata = previous_dp_metadata
-            pass
-
-    nano_manager.set_op_hook(op_hook)
+    if dp_size > 1 and _scheduler is not None:
+        assert isinstance(_scheduler, DBOScheduler)
+        _scheduler.set_dp_metadata(dp_metadatas)
 
     return (
         [
@@ -150,7 +167,7 @@ def nano_ubatch_split(
             )
             for i in range(split_config.num_nano_batches)
         ],
-        # The padding will be handled by the NanoInfer engine.
+        # The padding will be handled by the schedflow engine.
         torch.tensor(
             total_num_tokens_across_dp, device="cpu", dtype=torch.int32
         ),
