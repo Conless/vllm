@@ -7,27 +7,35 @@ import numpy as np
 import torch
 
 from schedflow.config import SchedFlowConfig
+from schedflow.example.vllm.tokenweave import (
+    TokenWeaveScheduler,
+    TokenWeaveSchedulerConfig,
+)
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.forward_context import DPMetadata
 from schedflow.manager import SchedFlowManager
-from schedflow.example.nanoflow import (
+from schedflow.example.vllm.nanoflow import (
     NanoFlowScheduler,
     NanoFlowSchedulerConfig,
 )
-from schedflow.example.dbo import DBOScheduler, DBOSchedulerConfig
+from schedflow.example.vllm.dbo import DBOScheduler, DBOSchedulerConfig
 from schedflow.interface import OpSchedulerBase, SplitConfig
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 
 
 _manager = SchedFlowManager()
-_scheduler: NanoFlowScheduler | DBOScheduler | None = None
+_scheduler: NanoFlowScheduler | DBOScheduler | TokenWeaveScheduler | None = None
 
 
 def get_scheduler(
-    config: NanoFlowSchedulerConfig | DBOSchedulerConfig,
-) -> NanoFlowScheduler | DBOScheduler:
+    config: NanoFlowSchedulerConfig
+    | DBOSchedulerConfig
+    | TokenWeaveSchedulerConfig,
+) -> NanoFlowScheduler | DBOScheduler | TokenWeaveScheduler:
     global _scheduler
-    if isinstance(config, NanoFlowSchedulerConfig):
+    if isinstance(config, TokenWeaveSchedulerConfig):
+        _scheduler = TokenWeaveScheduler(config)
+    elif isinstance(config, NanoFlowSchedulerConfig):
         _scheduler = NanoFlowScheduler(config)
     elif isinstance(config, DBOSchedulerConfig):
         _scheduler = DBOScheduler(config)
