@@ -165,7 +165,7 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
             final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(  # noqa E501
                 final_hidden_states)
 
-        return final_hidden_states.view(orig_shape)
+        return final_hidden_states
 
 
 class Qwen2MoeAttention(nn.Module):

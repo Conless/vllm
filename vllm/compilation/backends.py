@@ -14,12 +14,13 @@ import torch
 import torch.fx as fx
 from torch._dispatch.python import enable_python_dispatcher
 
+from schedflow.example.vllm.tokenweave import TokenWeaveSchedulerConfig
 import vllm.envs as envs
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
 from schedflow.config import CUDAGraphConfig, InductorConfig, SchedFlowConfig
-from schedflow.example.nanoflow import NanoFlowSchedulerConfig
-from schedflow.example.dbo import DBOSchedulerConfig
+from schedflow.example.vllm.nanoflow import NanoFlowSchedulerConfig
+from schedflow.example.vllm.dbo import DBOSchedulerConfig
 from vllm.platforms import current_platform
 from vllm.utils import is_torch_equal_or_newer, resolve_obj_by_qualname
 from vllm.v1.worker.schedflow import get_manager, get_scheduler
@@ -488,7 +489,7 @@ class VllmBackend:
                     or [],
                 )
             else:
-                scheduler_config = NanoFlowSchedulerConfig(
+                scheduler_config = TokenWeaveSchedulerConfig(
                     min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
                     max_num_nano_batches=self.compilation_config.max_num_nano_batches,
                     cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
