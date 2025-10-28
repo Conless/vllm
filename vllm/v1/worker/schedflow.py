@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from schedflow.config import SchedFlowConfig
+from schedflow.example.vllm.flux import FluxScheduler, FluxSchedulerConfig
 from schedflow.example.vllm.tokenweave import (
     TokenWeaveScheduler,
     TokenWeaveSchedulerConfig,
@@ -24,14 +25,21 @@ from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 
 
 _manager = SchedFlowManager()
-_scheduler: NanoFlowScheduler | DBOScheduler | TokenWeaveScheduler | None = None
+_scheduler: (
+    NanoFlowScheduler
+    | DBOScheduler
+    | TokenWeaveScheduler
+    | FluxScheduler
+    | None
+) = None
 
 
 def get_scheduler(
     config: NanoFlowSchedulerConfig
+    | FluxSchedulerConfig
     | DBOSchedulerConfig
     | TokenWeaveSchedulerConfig,
-) -> NanoFlowScheduler | DBOScheduler | TokenWeaveScheduler:
+) -> NanoFlowScheduler | DBOScheduler | TokenWeaveScheduler | FluxScheduler:
     global _scheduler
     if isinstance(config, TokenWeaveSchedulerConfig):
         _scheduler = TokenWeaveScheduler(config)
@@ -39,6 +47,8 @@ def get_scheduler(
         _scheduler = NanoFlowScheduler(config)
     elif isinstance(config, DBOSchedulerConfig):
         _scheduler = DBOScheduler(config)
+    elif isinstance(config, FluxSchedulerConfig):
+        _scheduler = FluxScheduler(config)
     else:
         raise ValueError(f"Invalid scheduler config: {config}")
     return _scheduler

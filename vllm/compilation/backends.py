@@ -14,12 +14,13 @@ import torch
 import torch.fx as fx
 from torch._dispatch.python import enable_python_dispatcher
 
-from schedflow.example.vllm.tokenweave import TokenWeaveSchedulerConfig
+from schedflow.example.vllm.flux import FluxSchedulerConfig
+from schedflow.example.vllm.tokenweave import TokenWeaveSchedulerConfig # noqa: F401
 import vllm.envs as envs
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
 from schedflow.config import CUDAGraphConfig, InductorConfig, SchedFlowConfig
-from schedflow.example.vllm.nanoflow import NanoFlowSchedulerConfig
+from schedflow.example.vllm.nanoflow import NanoFlowSchedulerConfig # noqa: F401
 from schedflow.example.vllm.dbo import DBOSchedulerConfig
 from vllm.platforms import current_platform
 from vllm.utils import is_torch_equal_or_newer, resolve_obj_by_qualname
@@ -489,15 +490,13 @@ class VllmBackend:
                     or [],
                 )
             else:
-                scheduler_config = TokenWeaveSchedulerConfig(
-                    min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
-                    max_num_nano_batches=self.compilation_config.max_num_nano_batches,
+                scheduler_config = FluxSchedulerConfig(
                     cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
                     or [],
                 )
             scheduler = get_scheduler(scheduler_config)
             inductor_config = InductorConfig(
-                enabled=True,
+                enabled=False,
                 compile_sizes=set(
                     [
                         int(size)
@@ -512,7 +511,8 @@ class VllmBackend:
                 or [],
             )
             schedflow_config = SchedFlowConfig(
-                max_num_nano_batches=scheduler_config.max_num_nano_batches,
+                max_num_nano_batches=1,
+                min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
                 inductor_config=inductor_config,
                 cudagraph_config=cudagraph_config,
             )
@@ -633,9 +633,9 @@ class VllmBackend:
 
         # propagate the split graph to the piecewise backend,
         # compile submodules with symbolic shapes
-        PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
-                                    self.vllm_config,
-                                    self).run(*example_inputs)
+        # PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
+        #                             self.vllm_config,
+        #                             self).run(*example_inputs)
 
         graph_path = os.path.join(local_cache_dir, "computation_graph.py")
         if not os.path.exists(graph_path):
