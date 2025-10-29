@@ -14,14 +14,10 @@ import torch
 import torch.fx as fx
 from torch._dispatch.python import enable_python_dispatcher
 
-from schedflow.example.vllm.flux import FluxSchedulerConfig
-from schedflow.example.vllm.tokenweave import TokenWeaveSchedulerConfig # noqa: F401
 import vllm.envs as envs
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
 from schedflow.config import CUDAGraphConfig, InductorConfig, SchedFlowConfig
-from schedflow.example.vllm.nanoflow import NanoFlowSchedulerConfig # noqa: F401
-from schedflow.example.vllm.dbo import DBOSchedulerConfig
 from vllm.platforms import current_platform
 from vllm.utils import is_torch_equal_or_newer, resolve_obj_by_qualname
 from vllm.v1.worker.schedflow import get_manager, get_scheduler
@@ -483,6 +479,7 @@ class VllmBackend:
         if self.compilation_config.enable_nano_batch_split:
             from vllm.distributed.parallel_state import get_dp_group
             if get_dp_group().world_size > 1:
+                from schedflow.example.vllm.dbo import DBOSchedulerConfig
                 scheduler_config = DBOSchedulerConfig(
                     min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
                     max_num_nano_batches=self.compilation_config.max_num_nano_batches,
@@ -490,7 +487,11 @@ class VllmBackend:
                     or [],
                 )
             else:
-                scheduler_config = FluxSchedulerConfig(
+                from schedflow.example.vllm.nanoflow import NanoFlowSchedulerConfig
+                scheduler_config = NanoFlowSchedulerConfig(
+                    min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
+                    max_num_nano_batches=self.compilation_config.max_num_nano_batches,
+                    use_ar_norm_fusion=True,
                     cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
                     or [],
                 )

@@ -7,50 +7,24 @@ import numpy as np
 import torch
 
 from schedflow.config import SchedFlowConfig
-from schedflow.example.vllm.flux import FluxScheduler, FluxSchedulerConfig
-from schedflow.example.vllm.tokenweave import (
-    TokenWeaveScheduler,
-    TokenWeaveSchedulerConfig,
-)
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.forward_context import DPMetadata
 from schedflow.manager import SchedFlowManager
-from schedflow.example.vllm.nanoflow import (
-    NanoFlowScheduler,
-    NanoFlowSchedulerConfig,
+from schedflow.interface import (
+    OpSchedulerBase,
+    OpSchedulerConfigBase,
+    SplitConfig,
 )
-from schedflow.example.vllm.dbo import DBOScheduler, DBOSchedulerConfig
-from schedflow.interface import OpSchedulerBase, SplitConfig
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 
 
 _manager = SchedFlowManager()
-_scheduler: (
-    NanoFlowScheduler
-    | DBOScheduler
-    | TokenWeaveScheduler
-    | FluxScheduler
-    | None
-) = None
+_scheduler: OpSchedulerBase | None = None
 
 
-def get_scheduler(
-    config: NanoFlowSchedulerConfig
-    | FluxSchedulerConfig
-    | DBOSchedulerConfig
-    | TokenWeaveSchedulerConfig,
-) -> NanoFlowScheduler | DBOScheduler | TokenWeaveScheduler | FluxScheduler:
+def get_scheduler(config: OpSchedulerConfigBase) -> OpSchedulerBase:
     global _scheduler
-    if isinstance(config, TokenWeaveSchedulerConfig):
-        _scheduler = TokenWeaveScheduler(config)
-    elif isinstance(config, NanoFlowSchedulerConfig):
-        _scheduler = NanoFlowScheduler(config)
-    elif isinstance(config, DBOSchedulerConfig):
-        _scheduler = DBOScheduler(config)
-    elif isinstance(config, FluxSchedulerConfig):
-        _scheduler = FluxScheduler(config)
-    else:
-        raise ValueError(f"Invalid scheduler config: {config}")
+    _scheduler = config.get_scheduler_cls()(config)
     return _scheduler
 
 
@@ -168,6 +142,7 @@ def nano_ubatch_split(
         ]
 
     if dp_size > 1 and _scheduler is not None:
+        from schedflow.example.vllm.dbo import DBOScheduler
         assert isinstance(_scheduler, DBOScheduler)
         _scheduler.set_dp_metadata(dp_metadatas)
 
