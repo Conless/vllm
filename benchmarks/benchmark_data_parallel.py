@@ -11,7 +11,7 @@ from time import sleep
 from transformers import AutoTokenizer
 
 from vllm import LLM, SamplingParams
-from vllm.benchmarks.datasets import RandomDataset, SampleRequest
+from vllm.benchmarks.datasets import RandomDataset, SampleRequest, ShareGPTDataset
 from vllm.engine.arg_utils import EngineArgs
 from vllm.inputs.data import TextPrompt
 from vllm.utils import FlexibleArgumentParser, get_open_port
@@ -30,6 +30,18 @@ def create_argument_parser():
         type=int,
         default=300,
         help="Timeout in seconds",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help="Dataset path",
+    )
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default=None,
+        help="Dataset path",
     )
     parser.add_argument(
         "--input-len",
@@ -53,20 +65,29 @@ def create_argument_parser():
     return parser
 
 
-def get_requests(
-    args: argparse.Namespace, tokenizer: AutoTokenizer
-) -> list[SampleRequest]:
+def get_requests(args, tokenizer):
+    # Common parameters for all dataset types.
+    common_kwargs = {
+        "dataset_path": args.dataset_path,
+        "random_seed": args.seed,
+    }
     sample_kwargs = {
         "tokenizer": tokenizer,
         "num_requests": args.num_prompts,
         "input_len": args.input_len,
         "output_len": args.output_len,
-        "prefix_len": 0,
-        "random_range_ratio": None,
     }
+
+    if args.dataset_path is None or args.dataset_name == "random":
+        dataset_cls = RandomDataset
+    elif args.dataset_name == "sharegpt":
+        dataset_cls = ShareGPTDataset
+    else:
+        raise ValueError(f"Unknown dataset name: {args.dataset_name}")
     # Remove None values
     sample_kwargs = {k: v for k, v in sample_kwargs.items() if v is not None}
-    return RandomDataset(random_seed=0).sample(**sample_kwargs)
+    return dataset_cls(**common_kwargs).sample(**sample_kwargs)
+
 
 
 def prepare_inputs(
@@ -160,16 +181,16 @@ def main(
         f"{total_output_tokens / elapsed_time:.2f} output tokens/s"
     )
     # Print the outputs.
-    for i, output in enumerate(outputs):
-        if i >= 5:
-            # print only 5 outputs
-            break
-        prompt = output.prompt
-        generated_text = output.outputs[0].text
-        print(
-            f"DP rank {global_dp_rank}, Prompt: {prompt!r}, "
-            f"Generated text: {generated_text!r}"
-        )
+    # for i, output in enumerate(outputs):
+    #     if i >= 5:
+    #         # print only 5 outputs
+    #         break
+    #     prompt = output.prompt
+    #     generated_text = output.outputs[0].text
+    #     print(
+    #         f"DP rank {global_dp_rank}, Prompt: {prompt!r}, "
+    #         f"Generated text: {generated_text!r}"
+    #     )
 
     # Give engines time to pause their processing loops before exiting.
     sleep(1)
@@ -188,7 +209,7 @@ if __name__ == "__main__":
     dp_master_port = get_open_port()
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    requests = prepare_inputs(args, tokenizer)
+    requests = get_requests(args, tokenizer)
     # with DP, each rank should process different prompts.
     # usually all the DP ranks process a full dataset,
     # and each rank processes a different part of the dataset.
