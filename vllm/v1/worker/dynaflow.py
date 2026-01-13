@@ -5,20 +5,16 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
+from dynaflow.config import DynaFlowConfig
+from dynaflow.interface import (OpSchedulerBase, OpSchedulerConfigBase,
+                                SplitConfig)
+from dynaflow.manager import DynaFlowManager
 
-from schedflow.config import SchedFlowConfig
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.forward_context import DPMetadata
-from schedflow.manager import SchedFlowManager
-from schedflow.interface import (
-    OpSchedulerBase,
-    OpSchedulerConfigBase,
-    SplitConfig,
-)
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
 
-
-_manager = SchedFlowManager()
+_manager = DynaFlowManager()
 _scheduler: OpSchedulerBase | None = None
 
 
@@ -30,10 +26,10 @@ def get_scheduler(config: OpSchedulerConfigBase) -> OpSchedulerBase:
 
 def get_manager(
     graph_module: torch.fx.GraphModule,
-    config: SchedFlowConfig,
+    config: DynaFlowConfig,
     scheduler: OpSchedulerBase,
     example_inputs: list[Any],
-) -> SchedFlowManager:
+) -> DynaFlowManager:
     global _manager
     _manager.initialize(graph_module, config, scheduler, example_inputs)
     return _manager
@@ -75,8 +71,7 @@ def nano_ubatch_split(
         disable_nano_split = False
         for i in range(dp_size):
             dp_nano_split_config[i] = dp_group.broadcast_object(
-                dp_nano_split_config[i], src=i
-            )
+                dp_nano_split_config[i], src=i)
             remote_config = dp_nano_split_config[i]
             assert remote_config is not None
             if remote_config.num_nano_batches == 1:
@@ -96,25 +91,17 @@ def nano_ubatch_split(
             dp_nano_split_config[dp_rank] = split_config
             for i in range(dp_size):
                 dp_nano_split_config[i] = dp_group.broadcast_object(
-                    dp_nano_split_config[i], src=i
-                )
-            assert all(
-                config is not None and config.num_nano_batches == 1
-                for config in dp_nano_split_config
-            )
+                    dp_nano_split_config[i], src=i)
+            assert all(config is not None and config.num_nano_batches == 1
+                       for config in dp_nano_split_config)
 
-        num_tokens_across_dp = [
-            [
-                config.num_tokens_padded[i]
-                for config in dp_nano_split_config
-                if config is not None
-            ]
-            for i in range(split_config.num_nano_batches)
-        ]
-        cu_num_tokens_across_dp = [
-            [sum(tokens[: i + 1]) for i in range(len(tokens))]
-            for tokens in num_tokens_across_dp
-        ]
+        num_tokens_across_dp = [[
+            config.num_tokens_padded[i] for config in dp_nano_split_config
+            if config is not None
+        ] for i in range(split_config.num_nano_batches)]
+        cu_num_tokens_across_dp = [[
+            sum(tokens[:i + 1]) for i in range(len(tokens))
+        ] for tokens in num_tokens_across_dp]
         total_num_tokens_across_dp = [
             sum(tokens[i] for tokens in num_tokens_across_dp)
             for i in range(dp_size)
@@ -134,15 +121,13 @@ def nano_ubatch_split(
                 ),
                 local_sizes=[
                     config.num_tokens_padded[i]
-                    for config in dp_nano_split_config
-                    if config is not None
+                    for config in dp_nano_split_config if config is not None
                 ],
-            )
-            for i in range(split_config.num_nano_batches)
+            ) for i in range(split_config.num_nano_batches)
         ]
 
     if dp_size > 1 and _scheduler is not None:
-        from schedflow.example.vllm.dbo import DBOScheduler
+        from dynaflow.example.vllm.dbo import DBOScheduler
         assert isinstance(_scheduler, DBOScheduler)
         _scheduler.set_dp_metadata(dp_metadatas)
 
@@ -157,11 +142,10 @@ def nano_ubatch_split(
                     split_config.split_indices[i],
                     split_config.split_indices[i + 1],
                 ),
-            )
-            for i in range(split_config.num_nano_batches)
+            ) for i in range(split_config.num_nano_batches)
         ],
-        # The padding will be handled by the schedflow engine.
-        torch.tensor(
-            total_num_tokens_across_dp, device="cpu", dtype=torch.int32
-        ),
+        # The padding will be handled by the dynaflow engine.
+        torch.tensor(total_num_tokens_across_dp,
+                     device="cpu",
+                     dtype=torch.int32),
     )

@@ -100,6 +100,11 @@ class BenchmarkMetrics:
     median_e2el_ms: float
     std_e2el_ms: float
     percentiles_e2el_ms: list[tuple[float, float]]
+    # E2ELPT stands for end-to-end latency per token.
+    mean_e2elpt_ms: float
+    median_e2elpt_ms: float
+    std_e2elpt_ms: float
+    percentiles_e2elpt_ms: list[tuple[float, float]]
     # Max output tokens per second and concurrent requests at that peak
     max_output_tokens_per_s: float
     max_concurrent_requests: int
@@ -298,6 +303,7 @@ def calculate_metrics(
     all_tpots: list[float] = []
     ttfts: list[float] = []
     e2els: list[float] = []
+    e2elpts: list[float] = []
     for i in range(len(outputs)):
         if outputs[i].success:
             output_len = outputs[i].output_tokens
@@ -323,6 +329,8 @@ def calculate_metrics(
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
             e2els.append(outputs[i].latency)
+            e2elpts.append(outputs[i].latency /
+                           (input_requests[i].prompt_len + output_len))
             completed += 1
         else:
             actual_output_lens.append(0)
@@ -444,6 +452,11 @@ def calculate_metrics(
         median_e2el_ms=np.median(e2els or 0) * 1000,
         percentiles_e2el_ms=[(p, np.percentile(e2els or 0, p) * 1000)
                              for p in selected_percentiles],
+        mean_e2elpt_ms=np.mean(e2elpts or 0) * 1000,
+        std_e2elpt_ms=np.std(e2elpts or 0) * 1000,
+        median_e2elpt_ms=np.median(e2elpts or 0) * 1000,
+        percentiles_e2elpt_ms=[(p, np.percentile(e2elpts or 0, p) * 1000)
+                               for p in selected_percentiles],
         max_output_tokens_per_s=max_output_tokens_per_s,
         max_concurrent_requests=max_concurrent_requests,
     )
@@ -785,6 +798,8 @@ async def benchmark(
                            "Time per Output Token (excl. 1st token)")
         process_one_metric("itl", "ITL", "Inter-token Latency")
     process_one_metric("e2el", "E2EL", "End-to-end Latency")
+    process_one_metric("e2elpt", "E2ELPT",
+                       "End-to-end Latency per Token (incl. prefill)")
 
     print("=" * 50)
 
@@ -848,7 +863,8 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace,
     metrics = [
         "median_ttft_ms", "mean_ttft_ms", "std_ttft_ms", "p99_ttft_ms",
         "mean_tpot_ms", "median_tpot_ms", "std_tpot_ms", "p99_tpot_ms",
-        "median_itl_ms", "mean_itl_ms", "std_itl_ms", "p99_itl_ms"
+        "median_itl_ms", "mean_itl_ms", "std_itl_ms", "p99_itl_ms",
+        "mean_e2elpt_ms", "median_e2elpt_ms", "std_e2elpt_ms", "p99_e2elpt_ms"
     ]
     # These raw data might be useful, but they are rather big. They can be added
     # later if needed
@@ -1038,10 +1054,11 @@ def add_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--percentile-metrics",
         type=str,
-        default="ttft,tpot,itl",
+        default="ttft,tpot,itl,e2elpt",
         help="Comma-separated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
-        "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". ")
+        "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\", "
+        "\"e2elpt\". ")
     parser.add_argument(
         "--metric-percentiles",
         type=str,

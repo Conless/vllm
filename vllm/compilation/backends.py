@@ -12,15 +12,15 @@ from typing import Any, Callable, Optional
 
 import torch
 import torch.fx as fx
+from dynaflow.config import CUDAGraphConfig, DynaFlowConfig, InductorConfig
 from torch._dispatch.python import enable_python_dispatcher
 
 import vllm.envs as envs
 from vllm.config import CompilationConfig, CUDAGraphMode, VllmConfig
 from vllm.logger import init_logger
-from schedflow.config import CUDAGraphConfig, InductorConfig, SchedFlowConfig
 from vllm.platforms import current_platform
 from vllm.utils import is_torch_equal_or_newer, resolve_obj_by_qualname
-from vllm.v1.worker.schedflow import get_manager, get_scheduler
+from vllm.v1.worker.dynaflow import get_manager, get_scheduler
 
 from .compiler_interface import (CompilerInterface, EagerAdaptor,
                                  InductorAdaptor, InductorStandaloneAdaptor)
@@ -479,47 +479,59 @@ class VllmBackend:
         if self.compilation_config.enable_nano_batch_split:
             from vllm.distributed.parallel_state import get_dp_group
             if get_dp_group().world_size > 1:
-                from schedflow.example.vllm.dbo import DBOSchedulerConfig
+                from dynaflow.example.vllm.dbo import DBOSchedulerConfig
                 scheduler_config = DBOSchedulerConfig(
-                    min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
-                    max_num_nano_batches=self.compilation_config.max_num_nano_batches,
-                    cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
-                    or [],
+                    min_nano_split_tokens=self.compilation_config.
+                    min_nano_split_tokens,
+                    max_num_nano_batches=self.compilation_config.
+                    max_num_nano_batches,
+                    use_reduce_norm_fusion=False,
+                    cudagraph_capture_sizes=self.compilation_config.
+                    cudagraph_capture_sizes or [],
+                )
+                inductor_config = InductorConfig(
+                    enabled=True,
+                    compile_sizes=set([
+                        int(size) for size in
+                        self.compilation_config.compile_sizes or []
+                    ]),
                 )
             else:
-                from schedflow.example.vllm.nanoflow import NanoFlowSchedulerConfig
+                from dynaflow.example.vllm.nanoflow import (
+                    NanoFlowSchedulerConfig)
                 scheduler_config = NanoFlowSchedulerConfig(
-                    min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
-                    max_num_nano_batches=self.compilation_config.max_num_nano_batches,
+                    min_nano_split_tokens=self.compilation_config.
+                    min_nano_split_tokens,
+                    max_num_nano_batches=self.compilation_config.
+                    max_num_nano_batches,
                     use_ar_norm_fusion=True,
-                    cudagraph_capture_sizes=self.compilation_config.cudagraph_capture_sizes
-                    or [],
+                    cudagraph_capture_sizes=self.compilation_config.
+                    cudagraph_capture_sizes or [],
+                )
+                inductor_config = InductorConfig(
+                    enabled=False,
+                    compile_sizes=set([
+                        int(size) for size in
+                        self.compilation_config.compile_sizes or []
+                    ]),
                 )
             scheduler = get_scheduler(scheduler_config)
-            inductor_config = InductorConfig(
-                enabled=False,
-                compile_sizes=set(
-                    [
-                        int(size)
-                        for size in self.compilation_config.compile_sizes or []
-                    ]
-                ),
-            )
             cudagraph_config = CUDAGraphConfig(
-                enabled=self.compilation_config.cudagraph_mode
-                == CUDAGraphMode.PIECEWISE,
+                enabled=self.compilation_config.cudagraph_mode ==
+                CUDAGraphMode.PIECEWISE,
                 capture_sizes=self.compilation_config.cudagraph_capture_sizes
                 or [],
             )
-            schedflow_config = SchedFlowConfig(
+            dynaflow_config = DynaFlowConfig(
                 max_num_nano_batches=1,
-                min_nano_split_tokens=self.compilation_config.min_nano_split_tokens,
+                min_nano_split_tokens=self.compilation_config.
+                min_nano_split_tokens,
                 inductor_config=inductor_config,
                 cudagraph_config=cudagraph_config,
             )
             return get_manager(
                 graph,
-                schedflow_config,
+                dynaflow_config,
                 scheduler,
                 example_inputs,
             ).get_callable()
@@ -634,9 +646,9 @@ class VllmBackend:
 
         # propagate the split graph to the piecewise backend,
         # compile submodules with symbolic shapes
-        # PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
-        #                             self.vllm_config,
-        #                             self).run(*example_inputs)
+        PiecewiseCompileInterpreter(self.split_gm, submod_names_to_compile,
+                                    self.vllm_config,
+                                    self).run(*example_inputs)
 
         graph_path = os.path.join(local_cache_dir, "computation_graph.py")
         if not os.path.exists(graph_path):

@@ -31,8 +31,8 @@ from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
 from vllm.distributed.parallel_state import (
-    get_dp_group, get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
-    prepare_communication_buffer_for_model)
+    get_dp_group, get_pp_group, get_tp_group, graph_capture,
+    is_global_first_rank, prepare_communication_buffer_for_model)
 from vllm.forward_context import (BatchDescriptor, DPMetadata,
                                   set_forward_context)
 from vllm.logger import init_logger
@@ -59,7 +59,6 @@ from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, DeviceMemoryProfiler,
                         is_pin_memory_available,
                         length_from_prompt_token_ids_or_embeds, round_up,
                         supports_dynamo)
-from vllm.utils.jsontree import json_map_leaves
 from vllm.v1.attention.backends.flash_attn import AttentionMetadata
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import (
@@ -92,12 +91,12 @@ from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.v1.structured_output.utils import apply_grammar_bitmask
 from vllm.v1.utils import CpuGpuBuffer, record_function_or_nullcontext
+from vllm.v1.worker.dynaflow import nano_ubatch_split
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import (
     KVConnectorModelRunnerMixin)
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
-from vllm.v1.worker.schedflow import nano_ubatch_split
 from vllm.v1.worker.ubatch_splitting import (check_ubatch_thresholds,
                                              ubatch_split)
 from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
@@ -1882,9 +1881,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         num_input_tokens: int,
         intermediate_tensors: Optional[IntermediateTensors] = None,
-    ) -> tuple[int, Optional[torch.Tensor],
-               Optional[torch.Tensor], torch.Tensor,
-               Optional[IntermediateTensors], dict[str, Any]]:
+    ) -> tuple[int, Optional[torch.Tensor], Optional[torch.Tensor],
+               torch.Tensor, Optional[IntermediateTensors], dict[str, Any]]:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
 
         # _prepare_inputs may reorder the batch, so we must gather multi
@@ -2174,22 +2172,21 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Prepare the decoder inputs.
                 (attn_metadata, logits_indices, spec_decode_metadata,
                  num_scheduled_tokens_np, spec_decode_common_attn_metadata,
-                 max_query_len, ubatch_slices, num_tokens_across_dp
-                 ) = self._prepare_inputs(scheduler_output)
+                 max_query_len, ubatch_slices,
+                 num_tokens_across_dp) = self._prepare_inputs(scheduler_output)
 
             num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             dp_group = get_dp_group()
             dp_rank = dp_group.rank_in_group
             if ubatch_slices and self.parallel_config.enable_dbo:
                 assert num_tokens_across_dp is not None
-                num_input_tokens = int(num_tokens_across_dp[dp_rank].item())
+                num_input_tokens = int(num_tokens_across_dp[0].item() * 2)
                 self.pad_out_ubatch_slice(ubatch_slices, num_input_tokens)
             elif num_tokens_across_dp is not None:
                 num_input_tokens = int(num_tokens_across_dp[dp_rank].item())
             else:
                 num_input_tokens = self._get_num_input_tokens(
-                    scheduler_output.total_num_scheduled_tokens
-                )
+                    scheduler_output.total_num_scheduled_tokens)
 
             (
                 num_scheduled_tokens,
@@ -2198,7 +2195,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 positions,
                 intermediate_tensors,
                 model_kwargs,
-            ) = self._preprocess(scheduler_output, num_input_tokens, intermediate_tensors)
+            ) = self._preprocess(scheduler_output, num_input_tokens,
+                                 intermediate_tensors)
 
             uniform_decode = (max_query_len
                               == self.uniform_decode_query_len) and (
@@ -2208,6 +2206,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                uniform_decode=uniform_decode)
             cudagraph_runtime_mode, batch_descriptor = \
                 self.cudagraph_dispatcher.dispatch(batch_descriptor)
+
+        if ubatch_slices is not None and self.parallel_config.enable_dbo:
+            num_input_tokens = ubatch_slices[0].num_tokens
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
@@ -2935,7 +2936,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 total_num_scheduled_tokens,
                 total_num_scheduled_tokens,
                 is_dummy_run=True,
-                use_cudagraph=cudagraph_runtime_mode == CUDAGraphMode.PIECEWISE,
+                use_cudagraph=cudagraph_runtime_mode ==
+                CUDAGraphMode.PIECEWISE,
             )
         elif self.parallel_config.enable_dbo and allow_microbatching:
             ubatch_slices, num_tokens_after_padding = ubatch_split(

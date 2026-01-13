@@ -89,7 +89,6 @@ def get_requests(args, tokenizer):
     return dataset_cls(**common_kwargs).sample(**sample_kwargs)
 
 
-
 def prepare_inputs(
     args: argparse.Namespace,
     tokenizer: AutoTokenizer,
@@ -169,7 +168,7 @@ def main(
     # Create an LLM.
     llm = LLM(**dataclasses.asdict(engine_args))
     start = time.perf_counter()
-    outputs = llm.generate(prompts, sampling_params)
+    llm.generate(prompts, sampling_params)
     elapsed_time = time.perf_counter() - start
     total_num_tokens = sum(
         request.prompt_len + request.expected_output_len for request in requests
@@ -239,7 +238,7 @@ if __name__ == "__main__":
         procs.append(proc)
     exit_code = 0
     for proc in procs:
-        proc.join(timeout=480)
+        proc.join(timeout=300)
         if proc.exitcode is None:
             print(f"Killing process {proc.pid} that didn't stop within 2 minutes.")
             proc.kill()
