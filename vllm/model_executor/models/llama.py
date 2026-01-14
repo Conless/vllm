@@ -36,6 +36,7 @@ from vllm.attention.layers.encoder_only_attention import EncoderOnlyAttention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
@@ -55,6 +56,8 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
+
+logger = init_logger(__name__)
 
 
 class LlamaMLP(nn.Module):
@@ -593,8 +596,29 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
+        import time
+        start_time = time.perf_counter_ns()
+        start_memory = torch.cuda.mem_get_info()[1] - torch.cuda.mem_get_info(
+        )[0]
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
         model_output = self.model(input_ids, positions, intermediate_tensors,
                                   inputs_embeds)
+        end_event.record()
+        end_time = time.perf_counter_ns()
+        end_event.synchronize()
+        end_memory = torch.cuda.mem_get_info()[1] - torch.cuda.mem_get_info(
+        )[0]
+        logger.info(
+            f"LlamaForCausalLM forward CPU time: {(end_time - start_time) / 1000000} ms"
+        )
+        logger.info(
+            f"LlamaForCausalLM forward GPU time: {start_event.elapsed_time(end_event)} ms"
+        )
+        logger.info(
+            f"LlamaForCausalLM forward GPU memory: {start_memory} -> {end_memory} bytes"
+        )
         return model_output
 
     def compute_logits(

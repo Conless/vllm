@@ -7,20 +7,14 @@ from typing import Any, Callable
 
 import torch
 
-from vllm.nanoinfer.engine import NanoInferEngine
-from vllm.nanoinfer.example.nanoflow import (
-    NanoFlowScheduler,
-    NanoFlowSchedulerConfig,
-)
-from vllm.nanoinfer.interface import (
-    ExecutionContext,
-    InputInfo,
-    OpSchedulerBase,
-    OperatorHandle,
-    SplitConfig,
-)
-from vllm.nanoinfer.utils import compile_subgraphs
 from vllm.nanoinfer.config import NanoInferConfig
+from vllm.nanoinfer.engine import NanoInferEngine
+from vllm.nanoinfer.example.nanoflow import (NanoFlowScheduler,
+                                             NanoFlowSchedulerConfig)
+from vllm.nanoinfer.interface import (ExecutionContext, InputInfo,
+                                      OperatorHandle, OpSchedulerBase,
+                                      SplitConfig)
+from vllm.nanoinfer.utils import compile_subgraphs
 
 
 class NanoInferManager:
@@ -36,12 +30,9 @@ class NanoInferManager:
         self.config: NanoInferConfig | None = None
         self.graph_module: torch.fx.GraphModule | None = None
         self.cached_config: SplitConfig | None = None
-        self.hook: (
-            Callable[
-                [tuple[OperatorHandle]], contextlib.AbstractContextManager[None]
-            ]
-            | None
-        ) = None
+        self.hook: (Callable[[tuple[OperatorHandle]],
+                             contextlib.AbstractContextManager[None]]
+                    | None) = None
         self.scheduler: OpSchedulerBase | None = None
         self.engine: NanoInferEngine | None = None
 
@@ -101,9 +92,8 @@ class NanoInferManager:
 
     def set_hooks(
         self,
-        op_hook: Callable[
-            [tuple[OperatorHandle]], contextlib.AbstractContextManager[None]
-        ],
+        op_hook: Callable[[tuple[OperatorHandle]],
+                          contextlib.AbstractContextManager[None]],
     ):
         """Set user-defined hook."""
         self.hook = op_hook
@@ -123,18 +113,10 @@ class NanoInferManager:
 
     async def _forward_async(self, args: tuple, kwargs: dict):
         """Async forward execution with engine and scheduler."""
-        assert (
-            self.initialized
-            and self.engine is not None
-            and self.scheduler is not None
-            and self.cached_config is not None
-        )
+        assert (self.initialized and self.engine is not None
+                and self.scheduler is not None
+                and self.cached_config is not None)
         num_nano_batches = self.cached_config.num_nano_batches
-        op_queue = {
-            i: asyncio.Queue(maxsize=10) for i in range(num_nano_batches)
-        }
-        execute_queue = asyncio.Queue()
-        context = ExecutionContext(self.cached_config, op_queue, execute_queue)
 
         if self.cached_config.is_dryrun:
             results_dict, events = self.engine.dryrun(
@@ -143,7 +125,24 @@ class NanoInferManager:
                 self.cached_config,
                 self.hook,
             )
+        elif num_nano_batches == 1:
+            # Fast path: single nano-batch, no scheduler coordination
+            results_dict, events = self.engine.execute_sequential(
+                args,
+                kwargs,
+                self.cached_config,
+                self.hook,
+            )
         else:
+            # Full async path: multiple nano-batches with scheduler coordination
+            op_queue = {
+                i: asyncio.Queue(maxsize=10)
+                for i in range(num_nano_batches)
+            }
+            execute_queue = asyncio.Queue()
+            context = ExecutionContext(self.cached_config, op_queue,
+                                       execute_queue)
+
             (results_dict, events), _ = await asyncio.gather(
                 self.engine.execute(
                     args,
@@ -158,25 +157,23 @@ class NanoInferManager:
         for event in events:
             event.wait()
         assert all(
-            isinstance(e, type(results_dict[0])) for e in results_dict.values()
-        ), f"Results have different types: {results_dict}"
+            isinstance(e, type(results_dict[0])) for e in results_dict.values(
+            )), f"Results have different types: {results_dict}"
         if isinstance(results_dict[0], torch.Tensor):
             return torch.cat(
-                [results_dict[idx] for idx in range(num_nano_batches)], dim=0
-            )
+                [results_dict[idx] for idx in range(num_nano_batches)], dim=0)
         elif isinstance(results_dict[0], tuple):
             num_elements = len(results_dict[0])
-            assert all(len(r) == num_elements for r in results_dict.values()), (
-                f"Results have different number of elements: {results_dict}"
-            )
+            assert all(len(r) == num_elements for r in results_dict.values(
+            )), (f"Results have different number of elements: {results_dict}")
             concatenated = []
             for i in range(num_elements):
                 elements = [
                     results_dict[idx][i] for idx in range(num_nano_batches)
                 ]
                 assert all(
-                    isinstance(e, type(elements[0])) for e in elements
-                ), f"Elements have different types: {elements}"
+                    isinstance(e, type(elements[0])) for e in
+                    elements), f"Elements have different types: {elements}"
                 concatenated.append(torch.cat(elements, dim=0))
             return tuple(concatenated)
         else:

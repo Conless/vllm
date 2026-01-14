@@ -1,12 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, Generic, TYPE_CHECKING, TypeVar
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
     from vllm.nanoinfer.example.nanoflow import NanoFlowSchedulerConfig
 else:
     NanoFlowSchedulerConfig = Any
-
 
 SupportedSchedulerConfig = TypeVar(
     "SupportedSchedulerConfig",
@@ -18,6 +20,7 @@ SupportedSchedulerConfig = TypeVar(
 class CUDAGraphConfig:
     enabled: bool
     capture_sizes: list[int]
+    disable_gc: bool = True
     weak_ref_output: bool = True
     check_ptr_consistency: bool = False
 

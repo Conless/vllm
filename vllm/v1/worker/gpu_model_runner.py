@@ -31,8 +31,8 @@ from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
 from vllm.distributed.parallel_state import (
-    get_dp_group, get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
-    prepare_communication_buffer_for_model)
+    get_dp_group, get_pp_group, get_tp_group, graph_capture,
+    is_global_first_rank, prepare_communication_buffer_for_model)
 from vllm.forward_context import (BatchDescriptor, DPMetadata,
                                   set_forward_context)
 from vllm.logger import init_logger
@@ -59,7 +59,6 @@ from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, DeviceMemoryProfiler,
                         is_pin_memory_available,
                         length_from_prompt_token_ids_or_embeds, round_up,
                         supports_dynamo)
-from vllm.utils.jsontree import json_map_leaves
 from vllm.v1.attention.backends.flash_attn import AttentionMetadata
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import (
@@ -1882,9 +1881,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         num_input_tokens: int,
         intermediate_tensors: Optional[IntermediateTensors] = None,
-    ) -> tuple[int, Optional[torch.Tensor],
-               Optional[torch.Tensor], torch.Tensor,
-               Optional[IntermediateTensors], dict[str, Any]]:
+    ) -> tuple[int, Optional[torch.Tensor], Optional[torch.Tensor],
+               torch.Tensor, Optional[IntermediateTensors], dict[str, Any]]:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
 
         # _prepare_inputs may reorder the batch, so we must gather multi
@@ -2174,8 +2172,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Prepare the decoder inputs.
                 (attn_metadata, logits_indices, spec_decode_metadata,
                  num_scheduled_tokens_np, spec_decode_common_attn_metadata,
-                 max_query_len, ubatch_slices, num_tokens_across_dp
-                 ) = self._prepare_inputs(scheduler_output)
+                 max_query_len, ubatch_slices,
+                 num_tokens_across_dp) = self._prepare_inputs(scheduler_output)
 
             num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             dp_group = get_dp_group()
@@ -2188,8 +2186,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 num_input_tokens = int(num_tokens_across_dp[dp_rank].item())
             else:
                 num_input_tokens = self._get_num_input_tokens(
-                    scheduler_output.total_num_scheduled_tokens
-                )
+                    scheduler_output.total_num_scheduled_tokens)
 
             (
                 num_scheduled_tokens,
@@ -2198,7 +2195,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 positions,
                 intermediate_tensors,
                 model_kwargs,
-            ) = self._preprocess(scheduler_output, num_input_tokens, intermediate_tensors)
+            ) = self._preprocess(scheduler_output, num_input_tokens,
+                                 intermediate_tensors)
 
             uniform_decode = (max_query_len
                               == self.uniform_decode_query_len) and (
@@ -2211,6 +2209,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
+        logger.info(
+            f"Running model with #num_input_tokens={num_input_tokens},"
+            f" #ubatches={len(ubatch_slices) if ubatch_slices is not None else 1}"
+        )
         with (set_forward_context(
                 attn_metadata,
                 self.vllm_config,
@@ -2935,7 +2937,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 total_num_scheduled_tokens,
                 total_num_scheduled_tokens,
                 is_dummy_run=True,
-                use_cudagraph=cudagraph_runtime_mode == CUDAGraphMode.PIECEWISE,
+                use_cudagraph=cudagraph_runtime_mode ==
+                CUDAGraphMode.PIECEWISE,
             )
         elif self.parallel_config.enable_dbo and allow_microbatching:
             ubatch_slices, num_tokens_after_padding = ubatch_split(
@@ -3331,6 +3334,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         start_time = time.perf_counter()
         start_free_gpu_memory = torch.cuda.mem_get_info()[0]
+        logger.info(f"Start GPU memory status: {torch.cuda.mem_get_info()}")
 
         @contextmanager
         def freeze_gc():
@@ -3390,6 +3394,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         end_time = time.perf_counter()
         end_free_gpu_memory = torch.cuda.mem_get_info()[0]
+        logger.info(f"End GPU memory status: {torch.cuda.mem_get_info()}")
         elapsed_time = end_time - start_time
         cuda_graph_size = start_free_gpu_memory - end_free_gpu_memory
         # This usually takes 5~20 seconds.
