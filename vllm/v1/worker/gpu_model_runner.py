@@ -2175,6 +2175,47 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                  max_query_len, ubatch_slices,
                  num_tokens_across_dp) = self._prepare_inputs(scheduler_output)
 
+            # Log batch information (prefill vs decode tokens)
+            num_reqs = self.input_batch.num_reqs
+            if num_reqs > 0:
+                # Get token counts per request
+                num_computed_tokens = self.input_batch.num_computed_tokens_cpu[:
+                                                                               num_reqs]
+                num_scheduled_tokens_np_arr = np.array([
+                    scheduler_output.num_scheduled_tokens[req_id]
+                    for req_id in self.input_batch.req_ids
+                ],
+                                                       dtype=np.int32)
+
+                # Calculate prefill vs decode
+                is_prefill = num_computed_tokens == 0
+                num_prefill_tokens = int(
+                    num_scheduled_tokens_np_arr[is_prefill].sum())
+                num_decode_tokens = int(
+                    num_scheduled_tokens_np_arr[~is_prefill].sum())
+                num_prefill_reqs = int(is_prefill.sum())
+                num_decode_reqs = num_reqs - num_prefill_reqs
+
+                # Log batch information with ubatch details if available
+                if ubatch_slices:
+                    ubatch_info = ", ubatches=[" + ", ".join(
+                        [f"tokens={ub.num_tokens}"
+                         for ub in ubatch_slices]) + "]"
+                else:
+                    ubatch_info = ""
+
+                logger.info(
+                    "Batch[%d reqs, %d scheduled tokens]: "
+                    "prefill=%d tokens(%d reqs), decode=%d tokens(%d reqs)%s",
+                    num_reqs,
+                    scheduler_output.total_num_scheduled_tokens,
+                    num_prefill_tokens,
+                    num_prefill_reqs,
+                    num_decode_tokens,
+                    num_decode_reqs,
+                    ubatch_info,
+                )
+
             num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
             dp_group = get_dp_group()
             dp_rank = dp_group.rank_in_group
